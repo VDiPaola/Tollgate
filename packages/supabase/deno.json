@@ -1,0 +1,16 @@
+{
+  "name": "@tollgate/supabase",
+  "version": "0.1.0",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publish": {
+    "include": ["src", "migrations", "README.md", "deno.json"]
+  },
+  "imports": {
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@^2.112.3",
+    "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@tollgate/core": "jsr:@tollgate/core@^0.1.0"
+  }
+}

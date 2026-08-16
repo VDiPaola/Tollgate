@@ -1,0 +1,26 @@
+/**
+ * Tollgate core.
+ *
+ * One purchase API over several stores. Nothing here touches a database or a
+ * network beyond the store adapters, and nothing here is specific to Supabase,
+ * Deno or Node: it is `fetch` and Web Crypto only, so the same build runs in a
+ * Supabase Edge Function and in a Next.js route handler.
+ */
+
+export * from './types.ts';
+export * from './errors.ts';
+export * from './adapter.ts';
+export * from './persistence.ts';
+export * from './tollgate.ts';
+export { FakeStore } from './adapters/fake.ts';
+export type { FakeNotification, SellOptions } from './adapters/fake.ts';
+
+export { GoogleAdapter } from './adapters/google/adapter.ts';
+export type { GoogleAdapterOptions } from './adapters/google/adapter.ts';
+export { GoogleAuth, parseServiceAccount } from './adapters/google/auth.ts';
+export type { ServiceAccount } from './adapters/google/auth.ts';
+export * from './adapters/google/normalize.ts';
+export type * from './adapters/google/types.ts';
+
+export { decodeJwt, signRs256, verifyGoogleIdToken } from './crypto/jwt.ts';
+export * from './crypto/encoding.ts';

@@ -1,0 +1,26 @@
+{
+  "workspace": [
+    "./packages/core",
+    "./packages/supabase"
+  ],
+  "tasks": {
+    "check": "deno check packages/core/src packages/core/test packages/supabase/src packages/supabase/test scripts",
+    "test": "deno test --allow-env packages/core/test",
+    "test:db": "deno test --allow-env --allow-net --allow-run --allow-read packages/supabase/test",
+    "fmt": "deno fmt packages",
+    "lint": "deno lint packages",
+    "probe:google": "deno run --env-file=.env --allow-env --allow-net scripts/probe-google.ts"
+  },
+  "imports": {
+    "@tollgate/core": "jsr:@tollgate/core@^0.1.0"
+  },
+  "fmt": {
+    "lineWidth": 80,
+    "singleQuote": true
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  }
+}
