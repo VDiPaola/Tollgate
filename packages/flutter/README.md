@@ -9,31 +9,35 @@ grant itself a subscription.
 
 ## Setup
 
-Until this is published to pub.dev, copy it into the host repository and depend
-on it from there:
-
-```
-deno task vendor:flutter ../<host>/packages/tollgate
-```
+Until this is published to pub.dev, take it from the repository, pinned to a
+tag:
 
 ```yaml
 dependencies:
   tollgate:
-    path: ../packages/tollgate
+    git:
+      url: https://github.com/VDiPaola/Tollgate.git
+      path: packages/flutter
+      ref: v0.1.0
 ```
 
-Depending on a sibling checkout directly, with
-`path: ../../tollgate/packages/flutter`, works on the machine that has both
-repositories and nowhere else. A build runner checks out one repository, so
-`flutter pub get` fails on a directory that does not exist, and the failure
-lands in a deploy rather than in a local build. A `git:` dependency solves that
-for a public repository and swaps it for a credential on every runner if the
-repository is private.
+Not `path: ../../tollgate/packages/flutter`. That resolves on the machine that
+has both repositories and nowhere else, so a build runner fails at
+`flutter pub get` on a directory that does not exist — in a deploy rather than
+in a local build.
 
-So the copy is committed, like any other vendored dependency, and
-`deno task vendor:flutter <dir> --check` reports when it has fallen behind the
-SDK. That check needs both repositories, so it runs on a laptop before pushing
-rather than in CI.
+Pin to a tag rather than a branch. Moving the tag is then a deliberate act,
+where following `main` means an app build can pick up an SDK commit nobody
+tested and look no different for it.
+
+For working on both at once, a gitignored `pubspec_overrides.yaml` in the host
+app points at the local checkout without touching the committed pubspec:
+
+```yaml
+dependency_overrides:
+  tollgate:
+    path: ../../tollgate/packages/flutter
+```
 
 Write a backend, which is the only app-specific part. Over Supabase it is about
 thirty lines:

@@ -117,34 +117,32 @@ moving. Running it twice in one transaction should grant once.
 
 ## 3. The edge functions
 
-Until the packages are published, vendor them:
+Deno reads TypeScript straight off a URL, so the functions take the SDK from
+this repository, pinned to a tag. Put an import map in
+`supabase/functions/deno.json`:
 
-```
-deno task vendor ../<host>/supabase/functions/_shared/tollgate
-```
-
-Supabase resolves function imports relative to the functions directory, so a
-path escaping it neither serves locally nor survives a deploy. Nothing in a
-vendored tree should be edited; run the task again instead.
-
-**Commit the result.** Generated code in a repository is a real cost, and this
-one is worth paying: a Supabase deploy bundles from the repository, so a clean
-checkout without it cannot deploy the edge functions at all, and the failure
-lands in production rather than in a build.
-
-What makes that safe is refusing to ship a stale copy:
-
-```
-deno task vendor <dir> --check
+```json
+{
+  "imports": {
+    "@tollgate/core": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.0/packages/core/src/index.ts",
+    "@tollgate/supabase": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.0/packages/supabase/src/index.ts",
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2"
+  }
+}
 ```
 
-It changes nothing and exits non-zero when the copy differs from the SDK, or
-holds a file the SDK no longer has. Wire it into whatever runs before a deploy.
-Without it, an SDK change that is tested and green can still ship edge functions
-running the previous version, and nothing says so.
+**All three entries are load-bearing, including the ones nothing imports by
+name.** `@tollgate/supabase` imports `@tollgate/core` and `@supabase/supabase-js`
+as bare specifiers, and a bare specifier inside a remote module is resolved
+through the host's import map or not at all. Leave one out and the functions
+type-check happily, because `deno check` does not type-check remote modules,
+and then fail at runtime with `Import "@tollgate/core" not a dependency`. That
+is a payment endpoint failing in production over a missing line in a config
+file, so it is worth knowing which line.
 
-All of this goes away when the packages are published: the functions then import
-them by version and the vendored tree is deleted.
+**Pin to a tag, not to `main`.** Moving the tag is a deliberate act; following a
+branch means a deploy can pick up an SDK commit nobody tested, and the deploy
+that does it will look identical to the one before.
 
 One client function, and one notification function per store. The client one:
 
@@ -197,24 +195,21 @@ trace from inside a payment.
 
 ## 4. The client
 
-The Dart package is vendored too, for a different reason than the edge
-functions and with the same conclusion:
-
-```
-deno task vendor:flutter ../<host>/packages/tollgate
-```
+The Dart package comes from the same place, pinned the same way:
 
 ```yaml
 dependencies:
   tollgate:
-    path: ../packages/tollgate
+    git:
+      url: https://github.com/VDiPaola/Tollgate.git
+      path: packages/flutter
+      ref: v0.1.0
 ```
 
-A `path:` dependency on a sibling checkout only resolves on a machine holding
-both repositories, so a build runner fails at `flutter pub get` on a directory
-that does not exist. A `git:` dependency fixes that for a public repository and
-replaces it with a credential on every runner for a private one. Commit the
-copy, and run `--check` before pushing.
+Not `path:` to a sibling checkout. That resolves on the machine holding both
+repositories and nowhere else, so a build runner fails at `flutter pub get` on a
+directory that does not exist, and it fails in a deploy rather than in a local
+build.
 
 Then implement `TollgateBackend` over the project's existing Supabase client and
 call `Tollgate.configure` at startup. Both are written out in

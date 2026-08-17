@@ -24,10 +24,6 @@ import { makeChain, opensslAvailable, signJws, type TestChain } from './support/
 
 const BUNDLE = 'com.example.app';
 const ACCOUNT = '11111111-1111-4111-8111-111111111111';
-// The real clock, because the certificates in `chain` are issued now and the
-// chain check reads a clock. A fixed date here would make these tests start
-// failing on whichever day it fell outside the generated validity window.
-const NOW = Date.now();
 const PROD = 'https://api.storekit.itunes.apple.com';
 const SANDBOX = 'https://api.storekit-sandbox.itunes.apple.com';
 
@@ -45,6 +41,18 @@ const P8 = await (async () => {
 })();
 
 const chain: TestChain | null = opensslAvailable ? await makeChain() : null;
+
+// The real clock, because the certificates in `chain` are issued now and the
+// chain check reads a clock. A fixed date here would make these tests start
+// failing on whichever day it fell outside the generated validity window.
+//
+// Read AFTER the chain is built, and that order is load-bearing. X.509 stamps
+// notBefore to the second, and issuing three certificates takes a second or
+// two, so reading the clock first leaves this fixed `now` fractionally before
+// the certificates exist. Every signature check then fails as "outside its
+// validity", and it does it intermittently, depending on which side of a
+// second boundary the run happens to land.
+const NOW = Date.now();
 
 function transaction(
   over: Partial<AppleTransactionInfo> = {},

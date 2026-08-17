@@ -9,8 +9,6 @@
     "test:db": "deno test --allow-env --allow-net --allow-run --allow-read packages/supabase/test",
     "fmt": "deno fmt packages",
     "lint": "deno lint packages",
-    "vendor": "deno run --allow-read --allow-write scripts/vendor.ts",
-    "vendor:flutter": "deno run --allow-read --allow-write scripts/vendor-flutter.ts",
     "revoke:google": "deno run --allow-read=.env --allow-net scripts/revoke-google.ts",
     "probe:google": "deno run --allow-read=.env --allow-net scripts/probe-google.ts"
   },
