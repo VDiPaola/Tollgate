@@ -5,7 +5,7 @@
   ],
   "tasks": {
     "check": "deno check packages/core/src packages/core/test packages/supabase/src packages/supabase/test scripts",
-    "test": "deno test --allow-env packages/core/test",
+    "test": "deno test --allow-env --allow-run=openssl --allow-read --allow-write packages/core/test",
     "test:db": "deno test --allow-env --allow-net --allow-run --allow-read packages/supabase/test",
     "fmt": "deno fmt packages",
     "lint": "deno lint packages",
