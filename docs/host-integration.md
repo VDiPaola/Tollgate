@@ -197,9 +197,28 @@ trace from inside a payment.
 
 ## 4. The client
 
-Add the Flutter package, implement `TollgateBackend` over the project's existing
-Supabase client, and call `Tollgate.configure` at startup. Both are written out
-in [the Flutter package's README](../packages/flutter/README.md).
+The Dart package is vendored too, for a different reason than the edge
+functions and with the same conclusion:
+
+```
+deno task vendor:flutter ../<host>/packages/tollgate
+```
+
+```yaml
+dependencies:
+  tollgate:
+    path: ../packages/tollgate
+```
+
+A `path:` dependency on a sibling checkout only resolves on a machine holding
+both repositories, so a build runner fails at `flutter pub get` on a directory
+that does not exist. A `git:` dependency fixes that for a public repository and
+replaces it with a credential on every runner for a private one. Commit the
+copy, and run `--check` before pushing.
+
+Then implement `TollgateBackend` over the project's existing Supabase client and
+call `Tollgate.configure` at startup. Both are written out in
+[the Flutter package's README](../packages/flutter/README.md).
 
 The store client is chosen by platform: Play Billing on Android, StoreKit 2 on
 iOS, and none at all on web and desktop, where the host app's own web checkout

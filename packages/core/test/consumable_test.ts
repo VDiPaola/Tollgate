@@ -150,6 +150,31 @@ Deno.test('a purchase nobody can be matched to is recorded, not retried forever'
   assertEquals(result.outcomes[0].action, 'unmapped_user');
   assert(result.handled, 'answering "handled" is what stops the redelivery loop');
   assertEquals(h.ledger.balance, 0);
+
+  // And it is left on the event, not only in a log. Somebody has been charged
+  // for something nobody can be given, which is the most expensive thing that
+  // can happen quietly, so it goes where an operator is already looking.
+  const event = h.db.events.get('fake:evt_orphan');
+  assert(
+    event?.error?.includes('could not be matched to a user'),
+    event?.error ?? 'no error was recorded on the event',
+  );
+});
+
+Deno.test('an ordinary notification leaves no error behind', async () => {
+  const h = harness();
+  const { token } = await buyGems(h);
+
+  await h.tollgate.handleNotification(
+    'fake',
+    h.store.request({
+      eventId: 'evt_fine',
+      type: 'PURCHASED',
+      originalTransactionId: token,
+    }),
+  );
+
+  assertEquals(h.db.events.get('fake:evt_fine')?.error, null);
 });
 
 Deno.test('a refund claws the gems back, into the negative if it has to', async () => {

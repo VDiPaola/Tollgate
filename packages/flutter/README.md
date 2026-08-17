@@ -9,11 +9,31 @@ grant itself a subscription.
 
 ## Setup
 
+Until this is published to pub.dev, copy it into the host repository and depend
+on it from there:
+
+```
+deno task vendor:flutter ../<host>/packages/tollgate
+```
+
 ```yaml
 dependencies:
   tollgate:
-    path: ../../tollgate/packages/flutter
+    path: ../packages/tollgate
 ```
+
+Depending on a sibling checkout directly, with
+`path: ../../tollgate/packages/flutter`, works on the machine that has both
+repositories and nowhere else. A build runner checks out one repository, so
+`flutter pub get` fails on a directory that does not exist, and the failure
+lands in a deploy rather than in a local build. A `git:` dependency solves that
+for a public repository and swaps it for a credential on every runner if the
+repository is private.
+
+So the copy is committed, like any other vendored dependency, and
+`deno task vendor:flutter <dir> --check` reports when it has fallen behind the
+SDK. That check needs both repositories, so it runs on a laptop before pushing
+rather than in CI.
 
 Write a backend, which is the only app-specific part. Over Supabase it is about
 thirty lines:

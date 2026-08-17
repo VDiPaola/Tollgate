@@ -15,7 +15,11 @@
  * `--check` changes nothing and exits non-zero when the target is stale, which
  * is what stops a build shipping edge functions that quietly run an older copy
  * of the SDK than the tests were run against.
+ *
+ * The Dart package is vendored separately, by `deno task vendor:flutter`.
  */
+
+import { readme, run } from './vendor-lib.ts';
 
 const args = Deno.args.filter((a) => !a.startsWith('--'));
 const checkOnly = Deno.args.includes('--check');
@@ -72,85 +76,20 @@ async function collect(from: string, to: string, rewrite: boolean) {
   }
 }
 
-async function* walk(dir: string): AsyncGenerator<string> {
-  let entries;
-  try {
-    entries = Deno.readDir(dir);
-  } catch {
-    return;
-  }
-  for await (const entry of entries) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      yield* walk(path);
-    } else {
-      yield path;
-    }
-  }
-}
-
 await collect(`${here}packages/core/src`, `${target}/core`, false);
 await collect(`${here}packages/supabase/src`, `${target}/supabase`, true);
 
 wanted.set(
   `${target}/README.md`,
-  [
-    '# Vendored Tollgate',
+  readme([
+    'The TypeScript packages, copied by `deno task vendor`.',
     '',
-    'Copied from the tollgate repository by `deno task vendor`. Do not edit',
-    'anything here: run the task again instead, and commit the result.',
-    '',
-    'It is committed on purpose. A Supabase deploy bundles from the repository,',
-    'so a checkout without this cannot deploy the edge functions at all. It goes',
-    'away once the packages are published and the functions import them by',
-    'version instead.',
+    'It is committed on purpose. A Supabase deploy bundles from the',
+    'repository, so a checkout without this cannot deploy the edge functions',
+    'at all.',
     '',
     '`deno task vendor <dir> --check` reports whether this copy is stale.',
-    '',
-  ].join('\n'),
+  ]),
 );
 
-if (checkOnly) {
-  const stale: string[] = [];
-
-  for (const [path, text] of wanted) {
-    let current: string | null = null;
-    try {
-      current = await Deno.readTextFile(path);
-    } catch {
-      // Missing entirely.
-    }
-    if (current !== text) stale.push(path);
-  }
-
-  // And anything here that the SDK no longer has, which would otherwise keep
-  // compiling against an interface that has gone.
-  for await (const path of walk(target)) {
-    if (!wanted.has(path)) stale.push(`${path} (no longer in the SDK)`);
-  }
-
-  if (stale.length === 0) {
-    console.log(`${target} is up to date.`);
-    Deno.exit(0);
-  }
-
-  console.error(
-    `${target} is stale. Run \`deno task vendor ${target}\` and commit:`,
-  );
-  for (const path of stale) console.error(`  ${path}`);
-  Deno.exit(1);
-}
-
-// Removed first so a file deleted upstream does not linger.
-try {
-  await Deno.remove(target, { recursive: true });
-} catch {
-  // Nothing there yet.
-}
-
-for (const [path, text] of wanted) {
-  await Deno.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
-  await Deno.writeTextFile(path, text);
-}
-
-console.log(`Vendored ${wanted.size} files into ${target}`);
+await run(target, wanted, checkOnly, 'deno task vendor');

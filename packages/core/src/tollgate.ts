@@ -97,6 +97,33 @@ export interface NotificationOutcome {
   userId?: string;
 }
 
+/**
+ * A note for the event row when a notification was handled and still reached
+ * nobody.
+ *
+ * Kept in the event's `error` column deliberately, even though nothing failed
+ * in the sense of throwing. A store telling us about a payment we cannot
+ * attribute to any user is the single most expensive silent outcome there is:
+ * somebody has been charged, the store considers the matter closed, and until
+ * now the only trace was a line in a log nobody reads. Writing it here puts it
+ * where an operator is already looking for trouble.
+ *
+ * It does not cause a retry. The handler answers 2xx on anything it has
+ * decided to stop asking about, and asking this store again would produce the
+ * same unattributable answer.
+ *
+ * Only `unmapped_user` qualifies. `gone` means the store has forgotten a
+ * purchase, which is how expired things end, and `sandbox_skipped` is a
+ * production deployment correctly refusing a test purchase. Both are ordinary.
+ */
+function unattributed(outcomes: NotificationOutcome[]): string | null {
+  const orphans = outcomes.filter((o) => o.action === 'unmapped_user');
+  if (orphans.length === 0) return null;
+  return `Handled, but ${orphans.length} purchase(s) could not be matched to ` +
+    `a user: ${orphans.map((o) => o.ref.originalTransactionId).join(', ')}. ` +
+    `The usual cause is a purchase made without an account token.`;
+}
+
 export class Tollgate {
   readonly #adapters = new Map<StoreId, StoreAdapter>();
   readonly #db: Persistence;
@@ -263,7 +290,7 @@ export class Tollgate {
       await this.#db.finishEvent(store, note.storeEventId, failure);
       throw e;
     }
-    await this.#db.finishEvent(store, note.storeEventId, null);
+    await this.#db.finishEvent(store, note.storeEventId, unattributed(outcomes));
 
     return {
       handled: true,

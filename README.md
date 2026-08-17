@@ -124,8 +124,12 @@ deno task test          # unit tests: no database, no credentials, needs openssl
 deno task test:db       # SQL pack tests, needs Docker
 deno task probe:google  # check Google Play credentials, needs .env
 deno task revoke:google # cancel a test subscription so it can be bought again
-deno task vendor <dir>  # copy the TS packages into a host project (--check to verify)
+deno task vendor <dir>          # copy the TS packages into a host project
+deno task vendor:flutter <dir>  # copy the Dart package into a host project
 ```
+
+Both take `--check`, which changes nothing and exits non-zero when the copy in
+the host project is stale.
 
 `openssl` is a real requirement rather than a convenience. The certificate and
 JWS tests build a chain they hold every key to, which is the only way to test
