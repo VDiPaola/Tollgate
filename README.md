@@ -101,6 +101,7 @@ deno task test          # unit tests, no database and no credentials needed
 deno task test:db       # SQL pack tests, needs Docker
 deno task probe:google  # check Google Play credentials, needs .env
 deno task revoke:google # cancel a test subscription so it can be bought again
+deno task vendor <dir>  # copy the TS packages into a host project (--check to verify)
 ```
 
 The Flutter package has its own toolchain:

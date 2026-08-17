@@ -118,6 +118,25 @@ Supabase resolves function imports relative to the functions directory, so a
 path escaping it neither serves locally nor survives a deploy. Nothing in a
 vendored tree should be edited; run the task again instead.
 
+**Commit the result.** Generated code in a repository is a real cost, and this
+one is worth paying: a Supabase deploy bundles from the repository, so a clean
+checkout without it cannot deploy the edge functions at all, and the failure
+lands in production rather than in a build.
+
+What makes that safe is refusing to ship a stale copy:
+
+```
+deno task vendor <dir> --check
+```
+
+It changes nothing and exits non-zero when the copy differs from the SDK, or
+holds a file the SDK no longer has. Wire it into whatever runs before a deploy.
+Without it, an SDK change that is tested and green can still ship edge functions
+running the previous version, and nothing says so.
+
+All of this goes away when the packages are published: the functions then import
+them by version and the vendored tree is deleted.
+
 Two functions. The client one:
 
 ```ts

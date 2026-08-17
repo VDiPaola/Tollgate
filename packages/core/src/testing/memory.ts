@@ -89,7 +89,6 @@ export class MemoryPersistence implements Persistence {
       revokeHook: opts.revokeHook ? 'memory' : null,
       clawback: 'revoke',
       graceDays: 3,
-      sandbox: 'deny',
       ...opts.config,
     };
   }

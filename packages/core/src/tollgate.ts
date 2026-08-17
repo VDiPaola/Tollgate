@@ -17,6 +17,7 @@ import type {
 import type {
   CustomerInfo,
   Entitlement,
+  Environment,
   NormalizedPurchase,
   ProductKind,
   PurchaseRef,
@@ -44,6 +45,24 @@ export interface TollgateOptions {
   adapters: StoreAdapter[];
   persistence: Persistence;
   logger?: Logger;
+
+  /**
+   * Which environment this deployment is, and therefore whose purchases it may
+   * grant on.
+   *
+   * `production` is the default and refuses sandbox purchases. That default is
+   * the whole point: a store's test purchase arrives through the same API as a
+   * real one, marked by a flag, so a deployment that accepts them hands its
+   * paid product to anybody who can reach a test account. Somewhere that has
+   * not been configured must be the somewhere that refuses.
+   *
+   * This deliberately does not live in the database. It is the one setting that
+   * differs between a laptop and production, which is exactly what a
+   * deployment's own environment is for; a row in a table travels with the
+   * migrations that create it and has to be remembered and changed by hand on
+   * every stack, which is how a development value ends up in production.
+   */
+  environment?: Environment;
 }
 
 export interface PurchaseResult {
@@ -82,11 +101,21 @@ export class Tollgate {
   readonly #adapters = new Map<StoreId, StoreAdapter>();
   readonly #db: Persistence;
   readonly #log: Logger;
+  readonly #environment: Environment;
 
   constructor(opts: TollgateOptions) {
     for (const a of opts.adapters) this.#adapters.set(a.store, a);
     this.#db = opts.persistence;
     this.#log = opts.logger ?? silent;
+    this.#environment = opts.environment ?? 'production';
+  }
+
+  /** Whether a purchase made in this environment may grant anything here. */
+  #accepts(purchase: NormalizedPurchase): boolean {
+    // Real purchases are honoured everywhere. Test purchases only where the
+    // deployment has said it is a test deployment.
+    return purchase.environment === 'production' ||
+      this.#environment === 'sandbox';
   }
 
   adapter(store: StoreId): StoreAdapter {
@@ -133,7 +162,7 @@ export class Tollgate {
       appAccountToken: customer.appAccountToken,
     });
 
-    await this.#assertUsableEnvironment(purchase);
+    this.#assertUsableEnvironment(purchase);
 
     // Linked before recording, not after. If the process dies between the two,
     // a stored alias with no purchase is repaired by the next notification;
@@ -320,8 +349,7 @@ export class Tollgate {
       return { ref, action: 'unmapped_user' };
     }
 
-    const config = await this.#db.config();
-    if (purchase.environment === 'sandbox' && config.sandbox === 'deny') {
+    if (!this.#accepts(purchase)) {
       return { ref, action: 'sandbox_skipped', userId };
     }
 
@@ -419,13 +447,11 @@ export class Tollgate {
     return await this.#db.userForAppAccountToken(purchase.appAccountToken);
   }
 
-  async #assertUsableEnvironment(purchase: NormalizedPurchase): Promise<void> {
-    if (purchase.environment !== 'sandbox') return;
-    const config = await this.#db.config();
-    if (config.sandbox === 'allow') return;
+  #assertUsableEnvironment(purchase: NormalizedPurchase): void {
+    if (this.#accepts(purchase)) return;
     throw new TollgateError(
       'sandbox_rejected',
-      'That is a sandbox purchase and this deployment only accepts real ones.',
+      'That is a test purchase and this deployment only accepts real ones.',
     );
   }
 

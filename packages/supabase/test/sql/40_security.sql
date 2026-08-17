@@ -238,3 +238,76 @@ end
 $$;
 
 \echo '  -- security: all passed'
+
+-- --- nothing is reachable that should not be, enumerated -------------------
+--
+-- The audit rather than a spot check. Every earlier case names one function it
+-- expects to be refused, which is exactly the check that passes while the
+-- function added last week sits wide open. This one asks the database what is
+-- actually reachable and compares it against the two that are meant to be.
+--
+-- It exists because that happened: `store_skus` and `grace_for` were added in
+-- later migrations, after the pack's blanket revoke had already run, and were
+-- world-executable from the moment they were created.
+do $$
+declare
+  v_leaked text;
+begin
+  select string_agg(p.proname, ', ' order by p.proname) into v_leaked
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'tollgate'
+    and p.proname not in ('my_entitlements', 'my_customer')
+    and (has_function_privilege('anon', p.oid, 'execute')
+         or has_function_privilege('authenticated', p.oid, 'execute'));
+
+  perform t_assert(
+    v_leaked is null,
+    'these tollgate functions are reachable by a client: ' ||
+      coalesce(v_leaked, '')
+  );
+
+  -- And the two that are meant to be, still are. A revoke that took everything
+  -- would pass the check above and break the app.
+  perform t_assert(
+    has_function_privilege('authenticated', 'tollgate.my_entitlements()', 'execute'),
+    'a signed-in user must still be able to read their own entitlements'
+  );
+  perform t_assert(
+    has_function_privilege('authenticated', 'tollgate.my_customer()', 'execute'),
+    'and still be able to get the token it has to attach to a purchase'
+  );
+
+  perform t_ok('nothing is reachable that should not be');
+end
+$$;
+
+-- --- the platform will not deny it for us --------------------------------
+--
+-- Recorded because it is worth knowing and easy to assume otherwise. The
+-- obvious structural guard, telling Postgres to stop granting EXECUTE to
+-- PUBLIC on new functions in this schema, reports success on Supabase and does
+-- nothing. If this test ever starts failing, the platform has been fixed and
+-- the note in 0002 can go.
+do $$
+declare
+  v_open boolean;
+begin
+  alter default privileges in schema tollgate
+    revoke execute on functions from public;
+
+  create function tollgate.pretend_new_function()
+  returns int language sql immutable as $fn$ select 1 $fn$;
+
+  select has_function_privilege('anon', 'tollgate.pretend_new_function()', 'execute')
+    into v_open;
+
+  drop function tollgate.pretend_new_function();
+
+  perform t_assert(
+    v_open,
+    'alter default privileges now works; drop the warning in 0002 and rely on it'
+  );
+  perform t_ok('the platform will not deny it for us, so the audit above is the guard');
+end
+$$;

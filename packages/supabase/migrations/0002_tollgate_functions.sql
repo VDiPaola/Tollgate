@@ -529,8 +529,7 @@ as $$
     'grantHook', grant_hook,
     'revokeHook', revoke_hook,
     'clawback', clawback,
-    'graceDays', grace_days,
-    'sandbox', sandbox
+    'graceDays', grace_days
   )
   from tollgate.config where id;
 $$;
@@ -817,6 +816,26 @@ $$;
 -- Postgres gives EXECUTE on new functions to PUBLIC, so every one of these has
 -- to be taken away explicitly. Missing one would let any signed-in client call
 -- record_purchase and grant itself whatever it liked.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- A note for whoever adds the next function here.
+--
+-- Postgres grants EXECUTE on a new function to PUBLIC, so every function in
+-- this schema is explicitly revoked at the end of 0002. That revoke runs once,
+-- at installation. A function added in a later migration does not get it, and
+-- is world-executable from the moment it is created, silently.
+--
+-- The obvious guard does not work: `alter default privileges in schema tollgate
+-- revoke execute on functions from public` reports success on Supabase and has
+-- no effect, in any schema and in either the plain or the `for role` form. It
+-- records nothing in pg_default_acl. Do not add it back believing it helps.
+--
+-- What actually guards this is a test. `40_security.sql` asks the database
+-- which functions in this schema an anon or authenticated caller can execute,
+-- and fails unless the answer is exactly the two `my_*` readers. Adding a
+-- function without revoking it breaks the suite, which is the only mechanism
+-- here that has ever caught it.
 -- ---------------------------------------------------------------------------
 
 revoke execute on all functions in schema tollgate from public;

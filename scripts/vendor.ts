@@ -2,19 +2,35 @@
  * Copy the TypeScript packages into a host project's edge functions.
  *
  *   deno task vendor ../Learning-app/supabase/functions/_shared/tollgate
+ *   deno task vendor ../Learning-app/supabase/functions/_shared/tollgate --check
  *
  * A stopgap until the packages are published to JSR. Supabase edge functions
  * resolve imports relative to the functions directory, so a path escaping it
  * does not work locally and does not survive a deploy; publishing is the real
- * answer and this is what makes testing possible before then.
+ * answer and this is what makes shipping possible before then.
  *
- * The copy is one-way and the target is overwritten. Nothing in a vendored tree
- * should ever be edited: run this again instead.
+ * The result is meant to be committed. A Supabase deploy bundles from the
+ * repository, so a checkout without it cannot deploy the edge functions at all.
+ *
+ * `--check` changes nothing and exits non-zero when the target is stale, which
+ * is what stops a build shipping edge functions that quietly run an older copy
+ * of the SDK than the tests were run against.
  */
 
-const [target] = Deno.args;
+const args = Deno.args.filter((a) => !a.startsWith('--'));
+const checkOnly = Deno.args.includes('--check');
+const [target] = args;
+
 if (!target) {
-  console.error('Usage: deno task vendor <target-directory>');
+  console.error(
+    [
+      'Usage: deno task vendor <target-directory> [--check]',
+      '',
+      '  --check  report whether the target is up to date and change nothing.',
+      '           Exits non-zero when it is stale, so a build can refuse to',
+      '           ship edge functions running an older copy of the SDK.',
+    ].join('\n'),
+  );
   Deno.exit(1);
 }
 
@@ -29,13 +45,15 @@ const REWRITES: Array<[RegExp, string]> = [
   [/from '@supabase\/supabase-js'/g, "from 'jsr:@supabase/supabase-js@2'"],
 ];
 
-async function copyTree(from: string, to: string, rewrite: boolean) {
-  await Deno.mkdir(to, { recursive: true });
+/** Every path the target should hold, and what it should contain. */
+const wanted = new Map<string, string>();
+
+async function collect(from: string, to: string, rewrite: boolean) {
   for await (const entry of Deno.readDir(from)) {
     const src = `${from}/${entry.name}`;
     const dst = `${to}/${entry.name}`;
     if (entry.isDirectory) {
-      await copyTree(src, dst, rewrite);
+      await collect(src, dst, rewrite);
       continue;
     }
     if (!entry.name.endsWith('.ts')) continue;
@@ -50,27 +68,89 @@ async function copyTree(from: string, to: string, rewrite: boolean) {
         text = text.replace(pattern, replacement);
       }
     }
-    await Deno.writeTextFile(dst, text);
+    wanted.set(dst, text);
   }
 }
 
-// Removed first so a file deleted upstream does not linger here and keep
-// compiling against an interface that no longer exists.
+async function* walk(dir: string): AsyncGenerator<string> {
+  let entries;
+  try {
+    entries = Deno.readDir(dir);
+  } catch {
+    return;
+  }
+  for await (const entry of entries) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) {
+      yield* walk(path);
+    } else {
+      yield path;
+    }
+  }
+}
+
+await collect(`${here}packages/core/src`, `${target}/core`, false);
+await collect(`${here}packages/supabase/src`, `${target}/supabase`, true);
+
+wanted.set(
+  `${target}/README.md`,
+  [
+    '# Vendored Tollgate',
+    '',
+    'Copied from the tollgate repository by `deno task vendor`. Do not edit',
+    'anything here: run the task again instead, and commit the result.',
+    '',
+    'It is committed on purpose. A Supabase deploy bundles from the repository,',
+    'so a checkout without this cannot deploy the edge functions at all. It goes',
+    'away once the packages are published and the functions import them by',
+    'version instead.',
+    '',
+    '`deno task vendor <dir> --check` reports whether this copy is stale.',
+    '',
+  ].join('\n'),
+);
+
+if (checkOnly) {
+  const stale: string[] = [];
+
+  for (const [path, text] of wanted) {
+    let current: string | null = null;
+    try {
+      current = await Deno.readTextFile(path);
+    } catch {
+      // Missing entirely.
+    }
+    if (current !== text) stale.push(path);
+  }
+
+  // And anything here that the SDK no longer has, which would otherwise keep
+  // compiling against an interface that has gone.
+  for await (const path of walk(target)) {
+    if (!wanted.has(path)) stale.push(`${path} (no longer in the SDK)`);
+  }
+
+  if (stale.length === 0) {
+    console.log(`${target} is up to date.`);
+    Deno.exit(0);
+  }
+
+  console.error(
+    `${target} is stale. Run \`deno task vendor ${target}\` and commit:`,
+  );
+  for (const path of stale) console.error(`  ${path}`);
+  Deno.exit(1);
+}
+
+// Removed first so a file deleted upstream does not linger.
 try {
   await Deno.remove(target, { recursive: true });
 } catch {
   // Nothing there yet.
 }
 
-await copyTree(`${here}packages/core/src`, `${target}/core`, false);
-await copyTree(`${here}packages/supabase/src`, `${target}/supabase`, true);
+for (const [path, text] of wanted) {
+  await Deno.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+  await Deno.writeTextFile(path, text);
+}
 
-await Deno.writeTextFile(
-  `${target}/README.md`,
-  `# Vendored Tollgate\n\n` +
-    `Copied from the tollgate repository by \`deno task vendor\`. Do not edit\n` +
-    `anything here: run the task again instead.\n\n` +
-    `Generated ${new Date().toISOString().slice(0, 10)}.\n`,
-);
-
-console.log(`Vendored core and supabase into ${target}`);
+console.log(`Vendored ${wanted.size} files into ${target}`);

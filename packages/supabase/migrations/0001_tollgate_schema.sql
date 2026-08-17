@@ -19,6 +19,7 @@ create schema if not exists tollgate;
 
 grant usage on schema tollgate to service_role, authenticated;
 
+
 -- ---------------------------------------------------------------------------
 -- stores: a table rather than an enum, because adding a payment processor
 -- should be an INSERT in a migration and not an ALTER TYPE that cannot be used
@@ -76,10 +77,14 @@ create table tollgate.config (
   -- subscription is over ends it immediately, window or no window.
   grace_days int not null default 3 check (grace_days between 0 and 30),
 
-  -- Whether a store's test environment may grant anything here. Denying is the
-  -- default because a sandbox purchase that grants production entitlement is a
-  -- free subscription for anyone who can run a simulator.
-  sandbox text not null default 'deny' check (sandbox in ('allow', 'deny')),
+  -- Note what is NOT here: which environment this deployment is. A store's test
+  -- purchase arrives through the same API as a real one, so whether to honour
+  -- one is the single most security-relevant setting in this pack, and it is
+  -- the only one that differs between a laptop and production. A row in this
+  -- table travels with the migration that creates it and then has to be
+  -- remembered and changed by hand on every stack, which is how a development
+  -- value reaches production. It is a deployment's own environment variable
+  -- instead; see TollgateOptions.environment.
 
   updated_at timestamptz not null default now()
 );

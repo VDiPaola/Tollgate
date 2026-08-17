@@ -221,7 +221,29 @@ Deno.test('a purchase whose token belongs to somebody else is refused', async ()
   assertEquals(await h.tollgate.entitlements(USER), []);
 });
 
-Deno.test('sandbox purchases are refused unless the deployment allows them', async () => {
+Deno.test('a deployment refuses test purchases unless it says it is one', async () => {
+  // The default, and the one that matters. A store's test purchase arrives
+  // through the same API as a real one, so a deployment nobody configured must
+  // be the one that refuses.
+  const h = harness();
+  const customer = await h.tollgate.customer(USER);
+  const token = h.store.sell({
+    storeProductId: 'sku.premium.monthly',
+    appAccountToken: customer.appAccountToken,
+    environment: 'sandbox',
+  });
+
+  let code: string | null = null;
+  try {
+    await h.tollgate.purchase('fake', { token, userId: USER });
+  } catch (e) {
+    code = (e as { code?: string }).code ?? null;
+  }
+  assertEquals(code, 'sandbox_rejected');
+  assertEquals(await h.tollgate.entitlements(USER), []);
+});
+
+Deno.test('a test deployment accepts test purchases', async () => {
   const store = new FakeStore();
   const db = new MemoryPersistence({
     now: () => store.now,
@@ -232,7 +254,11 @@ Deno.test('sandbox purchases are refused unless the deployment allows them', asy
       skus: [{ store: 'fake', storeProductId: 'sku.premium.monthly' }],
     }],
   });
-  const tollgate = new Tollgate({ adapters: [store.adapter()], persistence: db });
+  const tollgate = new Tollgate({
+    adapters: [store.adapter()],
+    persistence: db,
+    environment: 'sandbox',
+  });
   const customer = await tollgate.customer(USER);
   const token = store.sell({
     storeProductId: 'sku.premium.monthly',
@@ -240,13 +266,36 @@ Deno.test('sandbox purchases are refused unless the deployment allows them', asy
     environment: 'sandbox',
   });
 
-  let code: string | null = null;
-  try {
-    await tollgate.purchase('fake', { token, userId: USER });
-  } catch (e) {
-    code = (e as { code?: string }).code ?? null;
-  }
-  assertEquals(code, 'sandbox_rejected');
+  const result = await tollgate.purchase('fake', { token, userId: USER });
+  assert(premium(result.entitlements)!.active);
+});
+
+Deno.test('a test deployment still honours a real purchase', async () => {
+  // Refusing here would break anybody pointing a development build at real
+  // data, and a real purchase is real wherever it is read.
+  const store = new FakeStore();
+  const db = new MemoryPersistence({
+    now: () => store.now,
+    products: [{
+      id: 'premium_monthly',
+      kind: 'subscription',
+      entitlementKey: 'premium',
+      skus: [{ store: 'fake', storeProductId: 'sku.premium.monthly' }],
+    }],
+  });
+  const tollgate = new Tollgate({
+    adapters: [store.adapter()],
+    persistence: db,
+    environment: 'sandbox',
+  });
+  const customer = await tollgate.customer(USER);
+  const token = store.sell({
+    storeProductId: 'sku.premium.monthly',
+    appAccountToken: customer.appAccountToken,
+  });
+
+  const result = await tollgate.purchase('fake', { token, userId: USER });
+  assert(premium(result.entitlements)!.active);
 });
 
 Deno.test('an unmapped SKU is still recorded, and grants nothing', async () => {

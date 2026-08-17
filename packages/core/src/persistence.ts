@@ -40,8 +40,6 @@ export interface TollgateConfig {
    * between a renewal charge and the notification about it.
    */
   graceDays: number;
-  /** Whether sandbox purchases may grant anything in this deployment. */
-  sandbox: 'allow' | 'deny';
 }
 
 /** What [Persistence.recordPurchase] did. */
