@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'backend.dart';
 import 'models.dart';
 import 'store/store.dart';
+import 'store/apple_store.dart';
 import 'store/google_store.dart';
 
 /// Something to write diagnostics to. Purchases fail in ways nobody can
@@ -91,13 +92,17 @@ class Tollgate {
   }
 
   static StoreClient? _defaultStore() {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return GoogleStoreClient();
-    }
-    // iOS arrives with the Apple adapter. Everywhere else, including web and
-    // desktop, has no in-app store and buys through the web checkout instead,
-    // so a null store is a normal state rather than a failure.
-    return null;
+    // Chosen by platform rather than by asking, because the two clients pull in
+    // different plugins and only one of them can work here.
+    if (kIsWeb) return null;
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => GoogleStoreClient(),
+      TargetPlatform.iOS || TargetPlatform.macOS => AppleStoreClient(),
+      // Web, Windows and Linux have no in-app store. They buy through the web
+      // checkout the host app already has, so a null store is a normal state
+      // rather than a failure.
+      _ => null,
+    };
   }
 
   static void _defaultLogger(String message, [Object? detail]) {
@@ -132,9 +137,11 @@ class Tollgate {
 
   /// Look up SKUs, priced by the store.
   ///
-  /// [consumables] names which of them the app treats as consumable, since no
-  /// store has an opinion about that and it decides which purchase call is
-  /// used.
+  /// [consumables] names which of them the app treats as consumable, and is
+  /// only read on Android. Play sells a one-time product without any notion of
+  /// whether it is used up, so nothing in its response can answer the question
+  /// and the app's own catalogue has to. Apple states the product type, so the
+  /// iOS client ignores this and asks the store.
   Future<List<TollgateProduct>> products(
     Set<String> storeProductIds, {
     Set<String> consumables = const {},

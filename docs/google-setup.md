@@ -155,10 +155,10 @@ together. Rather than repointing the endpoint before launch, add a **second push
 subscription** to the same topic. Pub/Sub delivers every message to every
 subscription:
 
-| Subscription | Endpoint | `tollgate.config.sandbox` | Effect |
+| Subscription | Endpoint | `TOLLGATE_ENVIRONMENT` | Effect |
 | --- | --- | --- | --- |
-| development | dev stack | `allow` | test purchases grant entitlements |
-| production | production stack | `deny` | test purchases are recorded, grant nothing |
+| development | dev stack | `sandbox` | test purchases grant entitlements |
+| production | production stack | unset | test purchases are recorded, grant nothing |
 
 ## 5. Products
 

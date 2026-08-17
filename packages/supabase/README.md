@@ -76,8 +76,7 @@ update tollgate.config set
   revoke_hook = 'debit_gems',
   hook_search_path = 'public',
   clawback = 'revoke',
-  grace_days = 3,
-  sandbox = 'deny';
+  grace_days = 3;
 ```
 
 Both signatures are fixed and checked when you set them, so a typo fails here
@@ -107,7 +106,15 @@ something when state changes.
 | `hook_search_path` | `public` | The `search_path` the hooks run under |
 | `clawback` | `revoke` | `revoke` takes the goods back even into a negative balance, `keep` reports the refund and leaves it alone. Either way the customer is flagged |
 | `grace_days` | 3 | Slack for silence between a renewal being charged and anybody being told. Not an override: a store that says the subscription is over ends it at once |
-| `sandbox` | `deny` | Whether a store's test environment may grant anything here |
+
+Note what is **not** in that table: which environment this deployment is. A
+store's test purchase arrives through the same API as a real one, marked by a
+field, so whether to honour one is the most security-relevant setting there is
+and the only one that differs between a laptop and production. A row in a table
+travels with the migration that creates it and then has to be remembered and
+changed by hand on every stack, which is how a development value reaches
+production. It lives in the deployment's own environment instead, as
+`TollgateOptions.environment`, and defaults to `production`.
 
 ## Access model
 

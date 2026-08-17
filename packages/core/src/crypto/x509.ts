@@ -65,6 +65,27 @@ function curveOf(spki: Uint8Array): { name: string; size: number } {
   return curve;
 }
 
+/**
+ * A certificate's public key, ready to verify an ECDSA signature over bytes
+ * that are not another certificate.
+ *
+ * The JWS path needs this: once the chain is trusted, the payload's own
+ * signature is checked with the leaf's key. The curve is read from the key
+ * rather than taken from the caller, for the same reason as everywhere else
+ * here. No hash is named, because ECDSA in Web Crypto takes it at verify time
+ * rather than binding it to the key as RSA does.
+ */
+export async function importEcdsaKey(spki: Uint8Array): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    'spki',
+    // deno-lint-ignore no-explicit-any
+    spki as any,
+    { name: 'ECDSA', namedCurve: curveOf(spki).name },
+    false,
+    ['verify'],
+  );
+}
+
 /** Read the fields needed to verify a certificate and be verified by one. */
 export function parseCertificate(der: Uint8Array): Certificate {
   const certificate = readElement(der);

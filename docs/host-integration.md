@@ -79,16 +79,25 @@ create function public.tollgate_revoke(
 update tollgate.config set
   grant_hook = 'tollgate_grant',
   revoke_hook = 'tollgate_revoke',
-  hook_search_path = 'public',
-  sandbox = 'allow';   -- development stacks only
+  hook_search_path = 'public';
 ```
 
 The names are validated and rewritten to schema-qualified form on write, so a
 typo fails here rather than in the middle of a payment.
 
-`sandbox = 'allow'` matters more than it looks. Google has no test environment:
-a licence tester's purchase arrives through the same API as a real one, marked
-by a flag. A development stack must accept those, and production must not.
+Nothing here says whether this stack may honour a store's test purchases, and
+that is deliberate. It is the one setting that differs between a laptop and
+production, so it belongs in the deployment's environment rather than in a table
+a migration fills in identically everywhere:
+
+```
+TOLLGATE_ENVIRONMENT=sandbox    # development stacks only; anything else is production
+```
+
+It matters more than it looks. Google has no test environment at all: a licence
+tester's purchase arrives through the same API as a real one, marked by a field.
+A development stack has to accept those, and production must not, or a test
+account is a free subscription.
 
 **Verify before going further.** Drive the hooks directly, inside a transaction
 that rolls back, so nothing is left behind:
@@ -137,7 +146,7 @@ running the previous version, and nothing says so.
 All of this goes away when the packages are published: the functions then import
 them by version and the vendored tree is deleted.
 
-Two functions. The client one:
+One client function, and one notification function per store. The client one:
 
 ```ts
 import { createClientHandler } from '../_shared/tollgate/supabase/index.ts';
@@ -146,19 +155,41 @@ import { asUser, tollgate } from '../_shared/tollgate.ts';
 Deno.serve(createClientHandler({ tollgate, authClient: asUser }));
 ```
 
-And the notification one, which must be deployed with JWT verification off
-because the caller is a store with no Supabase token:
+And a notification function per store, each of which must be deployed with JWT
+verification off, because the caller is a store with no Supabase token:
 
 ```toml
 [functions.tollgate-google]
 verify_jwt = false
+
+[functions.tollgate-apple]
+verify_jwt = false
+
+[functions.tollgate-stripe]
+verify_jwt = false
 ```
 
-What makes that safe is the Google-signed token on the push request, which the
-adapter verifies. It refuses every notification when `pubsubAudience` is unset,
-rather than accepting unauthenticated ones.
+```ts
+import { createNotificationHandler } from '../_shared/tollgate/supabase/index.ts';
+import { tollgate } from '../_shared/tollgate.ts';
 
-Both need the store credentials from `.env.example` in the function environment.
+Deno.serve(createNotificationHandler(tollgate, 'apple'));
+```
+
+What makes turning verification off safe is that each adapter authenticates its
+own caller, and refuses rather than assuming:
+
+| Store | What is checked | What happens without it |
+| --- | --- | --- |
+| Google | The Google-signed token on the Pub/Sub push | Refuses every notification when `pubsubAudience` is unset |
+| Apple | The JWS signature, up a certificate chain ending at Apple's pinned root | Refuses anything not signed by Apple |
+| Stripe | The `Stripe-Signature` HMAC, inside a replay window | Refuses anything without the endpoint's secret |
+
+All of them need the store credentials from `.env.example` in the function
+environment. A store with no credentials is simply absent: the host's own
+`adapters()` should leave it out of the list rather than build a half-configured
+one, so an app asking about it gets a clean "unknown store" instead of a stack
+trace from inside a payment.
 
 > A new function directory 404s until the local edge runtime container is
 > recreated: it bakes the function list into its environment at creation, and
@@ -169,6 +200,12 @@ Both need the store credentials from `.env.example` in the function environment.
 Add the Flutter package, implement `TollgateBackend` over the project's existing
 Supabase client, and call `Tollgate.configure` at startup. Both are written out
 in [the Flutter package's README](../packages/flutter/README.md).
+
+The store client is chosen by platform: Play Billing on Android, StoreKit 2 on
+iOS, and none at all on web and desktop, where the host app's own web checkout
+does the selling. An app that runs on all three branches on whether
+`Tollgate.instance.storeAvailable` is true rather than on the platform, so the
+same code covers a device with no store and a device signed out of one.
 
 ## 5. Stripe, if the app also sells on the web
 

@@ -22,4 +22,5 @@ export 'src/backend.dart';
 export 'src/client.dart' show Tollgate, TollgateLogger;
 export 'src/models.dart';
 export 'src/store/store.dart';
+export 'src/store/apple_store.dart' show AppleStoreClient;
 export 'src/store/google_store.dart' show GoogleStoreClient;

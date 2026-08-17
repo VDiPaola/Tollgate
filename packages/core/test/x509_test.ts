@@ -9,90 +9,16 @@
 import { assert, assertEquals, assertRejects } from '@std/assert';
 
 import { parseCertificate, verifyChain, verifySignedBy } from '../src/crypto/x509.ts';
-import { base64ToBytes, bytesToBase64 } from '../src/crypto/encoding.ts';
-
-/** Build a chain with openssl, which every machine running these tests has. */
-async function makeChain(): Promise<{ chain: string[]; rootSpki: string }> {
-  const dir = await Deno.makeTempDir();
-  const run = async (args: string[]) => {
-    const { code, stderr } = await new Deno.Command('openssl', {
-      args,
-      cwd: dir,
-      stdout: 'null',
-      stderr: 'piped',
-    }).output();
-    if (code !== 0) {
-      throw new Error(new TextDecoder().decode(stderr));
-    }
-  };
-
-  // Root, self-signed, P-384 like Apple's.
-  await run(['ecparam', '-name', 'secp384r1', '-genkey', '-noout', '-out', 'root.key']);
-  await run([
-    'req', '-new', '-x509', '-key', 'root.key', '-out', 'root.pem',
-    '-days', '3650', '-subj', '/CN=Test Root',
-  ]);
-
-  // Intermediate, signed by the root.
-  await run(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'mid.key']);
-  await run(['req', '-new', '-key', 'mid.key', '-out', 'mid.csr', '-subj', '/CN=Test Intermediate']);
-  await run([
-    'x509', '-req', '-in', 'mid.csr', '-CA', 'root.pem', '-CAkey', 'root.key',
-    '-CAcreateserial', '-out', 'mid.pem', '-days', '3650',
-  ]);
-
-  // Leaf, signed by the intermediate.
-  await run(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'leaf.key']);
-  await run(['req', '-new', '-key', 'leaf.key', '-out', 'leaf.csr', '-subj', '/CN=Test Leaf']);
-  await run([
-    'x509', '-req', '-in', 'leaf.csr', '-CA', 'mid.pem', '-CAkey', 'mid.key',
-    '-CAcreateserial', '-out', 'leaf.pem', '-days', '3650',
-  ]);
-
-  const der = async (name: string) => {
-    const pem = await Deno.readTextFile(`${dir}/${name}`);
-    return pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
-  };
-
-  const chain = [await der('leaf.pem'), await der('mid.pem'), await der('root.pem')];
-  const root = parseCertificate(base64ToBytes(chain[2]));
-  return { chain, rootSpki: bytesToBase64(root.spki) };
-}
-
-/**
- * Whether openssl can be run to build a chain.
- *
- * A missing openssl is a reason to skip. A missing permission is not: these are
- * the tests standing between a forged Apple payload and a granted subscription,
- * and quietly skipping them because the runner was invoked without
- * `--allow-run` is how they come to be green and absent at the same time.
- */
-const available = await (async () => {
-  try {
-    const { code } = await new Deno.Command('openssl', {
-      args: ['version'],
-      stdout: 'null',
-      stderr: 'null',
-    }).output();
-    return code === 0;
-  } catch (e) {
-    if (e instanceof Deno.errors.NotCapable || e instanceof Deno.errors.PermissionDenied) {
-      throw new Error(
-        'Certificate chain tests need --allow-run=openssl, --allow-read and ' +
-          '--allow-write. Refusing to skip them silently.',
-      );
-    }
-    return false;
-  }
-})();
+import { base64ToBytes } from '../src/crypto/encoding.ts';
+import { makeChain, opensslAvailable } from './support/chain.ts';
 
 Deno.test({
   name: 'a real chain verifies, and every way of breaking it does not',
-  ignore: !available,
+  ignore: !opensslAvailable,
   fn: async () => {
-    const { chain, rootSpki } = await makeChain();
+    const { x5c, rootSpki } = await makeChain();
 
-    const leaf = await verifyChain(chain, { rootSpkiBase64: rootSpki });
+    const leaf = await verifyChain(x5c, { rootSpkiBase64: rootSpki });
     assert(leaf.spki.length > 0, 'the leaf key comes back for verifying the JWS');
 
     // A chain that is internally consistent and signed by somebody else. This
@@ -100,7 +26,7 @@ Deno.test({
     // can sign a payload with their own key and attach a matching chain.
     const other = await makeChain();
     await assertRejects(
-      () => verifyChain(chain, { rootSpkiBase64: other.rootSpki }),
+      () => verifyChain(x5c, { rootSpkiBase64: other.rootSpki }),
       Error,
       'does not end at the expected root',
     );
@@ -108,7 +34,7 @@ Deno.test({
     // A leaf swapped for one from another chain: the root still matches, but
     // the link below it does not.
     await assertRejects(
-      () => verifyChain([other.chain[0], chain[1], chain[2]], {
+      () => verifyChain([other.x5c[0], x5c[1], x5c[2]], {
         rootSpkiBase64: rootSpki,
       }),
       Error,
@@ -117,7 +43,7 @@ Deno.test({
 
     // Correct in every way except the clock.
     await assertRejects(
-      () => verifyChain(chain, {
+      () => verifyChain(x5c, {
         rootSpkiBase64: rootSpki,
         now: new Date('2000-01-01T00:00:00Z'),
       }),
@@ -127,7 +53,7 @@ Deno.test({
 
     // A chain with nothing to verify against is not a chain.
     await assertRejects(
-      () => verifyChain([chain[0]], { rootSpkiBase64: rootSpki }),
+      () => verifyChain([x5c[0]], { rootSpkiBase64: rootSpki }),
       Error,
       'too short',
     );
@@ -136,11 +62,11 @@ Deno.test({
 
 Deno.test({
   name: 'a tampered certificate body fails its issuer signature',
-  ignore: !available,
+  ignore: !opensslAvailable,
   fn: async () => {
-    const { chain } = await makeChain();
-    const leaf = parseCertificate(base64ToBytes(chain[0]));
-    const issuer = parseCertificate(base64ToBytes(chain[1]));
+    const { x5c } = await makeChain();
+    const leaf = parseCertificate(base64ToBytes(x5c[0]));
+    const issuer = parseCertificate(base64ToBytes(x5c[1]));
 
     assert(await verifySignedBy(leaf, issuer.spki));
 

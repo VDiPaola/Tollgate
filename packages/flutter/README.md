@@ -82,12 +82,33 @@ Stores deliver purchases nobody asked for: one interrupted by a crash, one made
 on another device, one that settled days after a slow payment method. Those
 arrive shortly after launch and are lost if nothing is listening yet.
 
+## Which store, on which platform
+
+Chosen automatically, and there is nothing to pass unless a test needs to
+substitute one.
+
+| Platform | Store client | Notes |
+| --- | --- | --- |
+| Android | `GoogleStoreClient` | Play Billing 8 |
+| iOS, macOS | `AppleStoreClient` | StoreKit 2 only |
+| Web, Windows, Linux | none | `storeAvailable` is false and `purchase` refuses |
+
+A null store is a normal state rather than a failure. Those platforms have no
+in-app store to sell through, so the host app's own web checkout does the
+selling and Tollgate only reads back what it granted.
+
+**iOS is StoreKit 2 only**, which means iOS 15 or later. StoreKit 1 has no way
+to attach an `appAccountToken` to a purchase, so a payment made through it could
+never be traced back to an account, at the time or at any renewal afterwards.
+The client reports itself unavailable there rather than taking money it cannot
+attribute.
+
 ## Buying
 
 ```dart
 final products = await Tollgate.instance.products(
   {'standard.sub', 'gem.1'},
-  consumables: {'gem.1'},   // no store has an opinion about this
+  consumables: {'gem.1'},   // Android only; Apple states the type itself
 );
 
 final result = await Tollgate.instance.purchase(products.first);
@@ -142,4 +163,16 @@ and then failing to record leaves money taken and no record of what it bought.
 If recording fails, the purchase is deliberately left uncompleted. The store
 re-delivers it on the next app start, which retries the whole thing. The cost
 of that is a Play auto-refund if it stays unacknowledged for three days, which
-is the better of the two failures.
+is the better of the two failures. Apple is gentler about the same mistake: an
+unfinished transaction is re-delivered on every launch and never auto-refunded,
+so the cost there is repetition rather than money.
+
+## What is proven, and what is not
+
+The Android path has been through real purchases on real hardware: subscriptions,
+consumables, renewals, refunds and store notifications.
+
+The iOS path has not, and cannot be until there is a Mac to build on. It is
+analyzed and type-checked against the real plugin API, and the server half it
+talks to is tested, but no Apple purchase has ever been through it. Treat it as
+unproven code rather than as a working feature.

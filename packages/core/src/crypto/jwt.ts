@@ -62,6 +62,39 @@ export async function signRs256(
   return `${body}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
+/**
+ * Sign a JWT with an EC P-256 private key in PEM (PKCS#8) form, which is what
+ * an App Store Connect `.p8` key file contains.
+ *
+ * Web Crypto produces ECDSA signatures as raw `r || s`, which is exactly the
+ * form JWS wants. X.509 is the odd one out in wrapping them in a DER sequence,
+ * and that conversion is confined to the certificate path in `der.ts`.
+ */
+export async function signEs256(
+  header: JwtHeader,
+  claims: JwtClaims,
+  privateKeyPem: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    // deno-lint-ignore no-explicit-any
+    pemToDer(privateKeyPem) as any,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign'],
+  );
+  const body = `${base64UrlEncode(JSON.stringify({ ...header, alg: 'ES256' }))}.${
+    base64UrlEncode(JSON.stringify(claims))
+  }`;
+  const signature = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    key,
+    // deno-lint-ignore no-explicit-any
+    utf8(body) as any,
+  );
+  return `${body}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
 /** Header and claims without checking anything. For routing, never for trust. */
 export function decodeJwt(
   token: string,

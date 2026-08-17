@@ -26,6 +26,12 @@ dependencies:
   # only thing that ties a Play purchase back to a user.
   in_app_purchase_android: ^0.5.2
 
+  # And directly for the iOS side, to read the StoreKit 2 product type off a
+  # product and to check that the plugin is on its StoreKit 2 path at all.
+  # StoreKit 1 cannot attach an account token to a purchase, so selling through
+  # it would take money that no notification could ever be traced back.
+  in_app_purchase_storekit: ^0.4.11
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
