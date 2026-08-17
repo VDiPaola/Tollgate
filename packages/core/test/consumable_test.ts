@@ -227,3 +227,141 @@ Deno.test('a failure to acknowledge does not fail the purchase', async () => {
   assertEquals(h.ledger.balance, 500);
   assert(result.finishWarning, 'but the risk of a store-side auto-refund is reported');
 });
+
+Deno.test('a client that does not say what it bought is not guessed at', async () => {
+  const h = harness();
+  const customer = await h.tollgate.customer(USER);
+  const token = h.store.sell({
+    storeProductId: 'sku.gems.medium',
+    kind: 'consumable',
+    appAccountToken: customer.appAccountToken,
+  });
+
+  // Record what kind the adapter was actually asked about. Google serves
+  // subscriptions and one-time products from two different endpoints, so this
+  // decides which one gets queried, and querying the wrong one answers 404 for
+  // a purchase that certainly exists.
+  const real = h.store.adapter();
+  let askedFor: string | undefined = 'never called';
+  const spy = {
+    ...real,
+    store: 'fake' as const,
+    verify: (req: { kind?: string; token: string; userId: string; appAccountToken: string }) => {
+      askedFor = req.kind;
+      return real.verify(req as never);
+    },
+    refresh: real.refresh.bind(real),
+    parseNotification: real.parseNotification.bind(real),
+    finish: real.finish?.bind(real),
+  };
+  const tollgate = new Tollgate({ adapters: [spy], persistence: h.db });
+
+  // No `kind` in the request, which is the ordinary case: a device knows what
+  // it put in the basket, but a restored purchase arrives with a product id
+  // and nothing else.
+  const result = await tollgate.purchase('fake', {
+    token,
+    userId: USER,
+    storeProductId: 'sku.gems.medium',
+  });
+
+  assertEquals(askedFor, 'consumable', 'the catalogue should have answered');
+  assert(result.granted);
+  assertEquals(h.ledger.balance, 500);
+});
+
+Deno.test('an unmapped SKU leaves the kind unanswered rather than invented', async () => {
+  const h = harness();
+  const customer = await h.tollgate.customer(USER);
+  const token = h.store.sell({
+    storeProductId: 'sku.nobody.configured',
+    appAccountToken: customer.appAccountToken,
+  });
+
+  const real = h.store.adapter();
+  let askedFor: string | undefined = 'never called';
+  const spy = {
+    ...real,
+    store: 'fake' as const,
+    verify: (req: { kind?: string; token: string; userId: string; appAccountToken: string }) => {
+      askedFor = req.kind;
+      return real.verify(req as never);
+    },
+    refresh: real.refresh.bind(real),
+    parseNotification: real.parseNotification.bind(real),
+    finish: real.finish?.bind(real),
+  };
+  const tollgate = new Tollgate({ adapters: [spy], persistence: h.db });
+
+  await tollgate.purchase('fake', {
+    token,
+    userId: USER,
+    storeProductId: 'sku.nobody.configured',
+  });
+  // Undefined, not a default. The adapter knows its own store's fallback and
+  // this layer does not, so making one up here would override a better guess.
+  assertEquals(askedFor, undefined);
+});
+
+Deno.test('a fresh purchase is left for whoever is handling it', async () => {
+  // Play publishes within a couple of hundred milliseconds, so its notification
+  // routinely lands while the device that made the purchase is still talking to
+  // its own server. Settling here would win that race and leave the device's
+  // own consume answering "you do not own this" to somebody who just paid.
+  const store = new FakeStore(new Date());
+  const db = new MemoryPersistence({
+    now: () => new Date(),
+    products: [{
+      id: 'gems_medium',
+      kind: 'consumable',
+      grantPayload: { gems: 500 },
+      skus: [{ store: 'fake', storeProductId: 'sku.gems.medium' }],
+    }],
+  });
+  const tollgate = new Tollgate({ adapters: [store.adapter()], persistence: db });
+  const customer = await tollgate.customer(USER);
+  const token = store.sell({
+    storeProductId: 'sku.gems.medium',
+    kind: 'consumable',
+    appAccountToken: customer.appAccountToken,
+  });
+
+  await tollgate.handleNotification(
+    'fake',
+    store.request({
+      eventId: 'evt_fresh',
+      type: 'ONE_TIME_PRODUCT_PURCHASED',
+      originalTransactionId: token,
+    }),
+  );
+
+  assertFalse(
+    store.finished(token),
+    'seconds old, so somebody is still handling it',
+  );
+});
+
+Deno.test('a purchase nobody settled is eventually settled by the server', async () => {
+  // The other side of the same rule. Nothing claimed this within the window,
+  // so the server stops waiting: Play auto-refunds anything unacknowledged.
+  const h = harness();
+  const customer = await h.tollgate.customer(USER);
+  const token = h.store.sell({
+    storeProductId: 'sku.gems.medium',
+    kind: 'consumable',
+    appAccountToken: customer.appAccountToken,
+  });
+  // The fake store's clock sits well in the past, which is what "long
+  // unsettled" looks like to the rule.
+  await h.tollgate.handleNotification(
+    'fake',
+    h.store.request({
+      eventId: 'evt_stale',
+      type: 'ONE_TIME_PRODUCT_PURCHASED',
+      originalTransactionId: token,
+    }),
+  );
+
+  assert(h.store.finished(token), 'nobody else was going to');
+  assertEquals(h.ledger.balance, 500);
+});

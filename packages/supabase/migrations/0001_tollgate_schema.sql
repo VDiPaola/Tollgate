@@ -141,9 +141,15 @@ create table tollgate.store_products (
   store text not null references tollgate.stores (id),
   store_product_id text not null,
 
-  -- Google sells a subscription product through one of several base plans, and
-  -- the plan is what carries the price and the billing period. Null on stores
-  -- with no such concept.
+  -- The variant of the SKU, where a store has such a thing. Google fills this
+  -- two ways: a subscription's BASE PLAN, which carries the price and billing
+  -- period, and under Billing 8 a one-time product's PURCHASE OPTION, which
+  -- does the same job for a single purchase. Both play the same part here, so
+  -- they share the column despite Google's two names for it.
+  --
+  -- Null means a catch-all matching every variant of that SKU, which is the
+  -- right default unless two variants genuinely need to map to different
+  -- products.
   base_plan_id text,
 
   product_id text not null references tollgate.products (id) on delete cascade,

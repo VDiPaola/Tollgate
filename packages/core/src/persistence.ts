@@ -60,6 +60,16 @@ export interface RecordResult {
   kind: ProductKind | null;
   /** Whether a consumable's grant hook ran on this call, exactly once ever. */
   granted: boolean;
+  /**
+   * Whether the goods are delivered for this purchase, by anybody.
+   *
+   * The question a caller actually has. [granted] answers a narrower one, and
+   * is false on the commonest happy path there is: a store notification
+   * arriving a couple of hundred milliseconds ahead of the device that made the
+   * purchase, delivering the goods, and leaving the device's own call to report
+   * that it personally did nothing.
+   */
+  delivered: boolean;
   /** Whatever the grant hook returned, for the caller to pass back to the app. */
   grantResult: unknown;
   entitlements: Entitlement[];
@@ -72,6 +82,15 @@ export interface RevokeResult {
   clawedBack: boolean;
   clawbackResult: unknown;
   entitlements: Entitlement[];
+}
+
+/** A product as one store sells it. */
+export interface StoreProduct {
+  productId: string;
+  kind: ProductKind;
+  entitlementKey: string | null;
+  storeProductId: string;
+  basePlanId: string | null;
 }
 
 export interface EventRecord {
@@ -139,6 +158,9 @@ export interface Persistence {
   ): Promise<void>;
 
   entitlements(userId: string): Promise<Entitlement[]>;
+
+  /** Every product a store sells, with the SKU it sells it under. */
+  storeProducts(store: StoreId): Promise<StoreProduct[]>;
 
   /** What a store SKU means to this app, or null if nothing maps it. */
   productFor(

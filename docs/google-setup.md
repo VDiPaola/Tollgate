@@ -142,9 +142,11 @@ projects/<project-id>/topics/play-rtdn
 
 **Send test notification** confirms the wiring before any handler exists.
 
-> `GOOGLE_RTDN_TOPIC` is the full topic name. Tollgate checks it against the
-> topic named inside each message, so a subscription pointed at another app's
-> topic is rejected rather than processed.
+> `GOOGLE_RTDN_TOPIC` is the full topic name. It is recorded for reference and
+> is not read at runtime: a Pub/Sub push carries the *subscription* name, not
+> the topic, so there is nothing to compare it against. The guard against a
+> subscription pointed at the wrong app is `packageName`, which every developer
+> notification carries and which Tollgate checks on each one.
 
 ### Serving two environments from one topic
 
@@ -165,7 +167,11 @@ to a track before products can be created.
 
 - **Subscriptions** carry both a subscription id and one or more **base plan**
   ids. Both are needed: the base plan is what holds the price and billing period.
-- **In-app products** are one-off purchases, used for consumables.
+- **One-time products** are single purchases, used for consumables. Google
+  replaced the older "in-app products" model with these, and an app that has
+  been migrated no longer answers the legacy `inappproducts` API at all: it
+  returns "Please migrate to the new publishing API". Tollgate reads purchase
+  state through `purchases.productsv2`, which works either way.
 
 Products must be **active**. Map each into `tollgate.store_products`:
 
@@ -173,15 +179,23 @@ Products must be **active**. Map each into `tollgate.store_products`:
 insert into tollgate.store_products
   (store, store_product_id, base_plan_id, product_id)
 values
-  ('google', 'premium', 'monthly', 'premium_monthly'),
-  ('google', 'gems_500', null,     'gems_medium');
+  ('google', 'premium',  'monthly', 'premium_monthly'),
+  ('google', 'gems_500', null,      'gems_medium');
 ```
 
-A row naming a base plan matches only that plan. A row leaving it null is a
-catch-all for every plan of that subscription, and an exact match always wins.
-The catch-all is the safer default: a base plan added in the Console and never
-mapped here would otherwise be a subscription somebody paid for that grants
-nothing.
+`base_plan_id` holds the **variant** of the SKU, and Google fills it two ways: a
+subscription's base plan, and under Billing 8 a one-time product's purchase
+option. Both mean the same thing here, which is one SKU sold several ways.
+
+A row naming a variant matches only that variant. A row leaving it null is a
+catch-all for all of them, and an exact match always wins. The catch-all is the
+safer default: a base plan or purchase option added in the Console and never
+mapped here would otherwise be something somebody paid for that grants nothing.
+Name variants explicitly only when two of them have to grant different things,
+such as two purchase options of one product selling different quantities.
+
+`deno task probe:google` prints these rows for the app's real catalogue, so the
+ids do not have to be transcribed from the Console by hand.
 
 ## 6. Testing on a device
 

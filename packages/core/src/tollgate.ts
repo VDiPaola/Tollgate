@@ -9,11 +9,16 @@
 
 import type { ParsedNotification, StoreAdapter, VerifyRequest } from './adapter.ts';
 import { TollgateError } from './errors.ts';
-import type { Persistence, RecordResult } from './persistence.ts';
+import type {
+  Persistence,
+  RecordResult,
+  StoreProduct,
+} from './persistence.ts';
 import type {
   CustomerInfo,
   Entitlement,
   NormalizedPurchase,
+  ProductKind,
   PurchaseRef,
   StoreId,
 } from './types.ts';
@@ -24,6 +29,16 @@ export interface Logger {
 }
 
 const silent: Logger = { warn: () => {}, error: () => {} };
+
+/**
+ * How long a device is given to settle its own purchase before the server
+ * stops waiting and does it itself.
+ *
+ * Ten minutes is long enough to cover a client that is slow, retrying, or
+ * briefly offline, and far short of the three days Play allows before it
+ * auto-refunds anything unacknowledged.
+ */
+const SETTLE_GRACE_MS = 10 * 60 * 1000;
 
 export interface TollgateOptions {
   adapters: StoreAdapter[];
@@ -36,6 +51,8 @@ export interface PurchaseResult {
   entitlements: Entitlement[];
   /** True when the grant hook ran on this call rather than a previous one. */
   granted: boolean;
+  /** True when the goods are delivered for this purchase, by any path. */
+  delivered: boolean;
   grantResult: unknown;
   /**
    * Set when the purchase was recorded but the store could not be told it was
@@ -88,18 +105,31 @@ export class Tollgate {
   }
 
   /**
+   * Every product a store sells, with the SKU it sells it under.
+   *
+   * The direction a client needs. An app knows it wants to sell a product and
+   * has to ask a store for an id it has never heard of; compiling those ids
+   * into the app instead means shipping a release to change one.
+   */
+  async storeProducts(store: StoreId): Promise<StoreProduct[]> {
+    return await this.#db.storeProducts(store);
+  }
+
+  /**
    * A client says it bought something. Check with the store, record it, deliver
    * it, and only then tell the store it was delivered.
    */
   async purchase(
     store: StoreId,
     req: Omit<VerifyRequest, 'appAccountToken'>,
+    opts: { settle?: boolean } = {},
   ): Promise<PurchaseResult> {
     const adapter = this.adapter(store);
     const customer = await this.#db.ensureCustomer(req.userId);
 
     const purchase = await adapter.verify({
       ...req,
+      kind: req.kind ?? await this.#kindOf(store, req.storeProductId),
       appAccountToken: customer.appAccountToken,
     });
 
@@ -128,12 +158,23 @@ export class Tollgate {
       );
     }
 
-    const finishWarning = await this.#finish(adapter, purchase, result.kind);
+    // `settle: false` means a device is going to acknowledge or consume this
+    // itself, once it sees this response. Both sides doing it is not harmless:
+    // Play answers an error to a second consume, and on a consumable the
+    // client SDK needs the consume to be its own or it cannot clear the
+    // purchase from its pending list, and re-delivers it on every app start.
+    //
+    // The client only completes after this call returns, so the ordering rule
+    // still holds either way: recorded and granted first, settled second.
+    const finishWarning = opts.settle === false
+      ? undefined
+      : await this.#finish(adapter, purchase, result.kind);
 
     return {
       purchase,
       entitlements: result.entitlements,
       granted: result.granted,
+      delivered: result.delivered,
       grantResult: result.grantResult,
       ...(finishWarning ? { finishWarning } : {}),
     };
@@ -302,13 +343,59 @@ export class Tollgate {
       );
     }
 
-    // Settle it here too, not only on the client's own verify call. A store's
-    // notification about a brand new purchase routinely beats the client, and
-    // Play auto-refunds anything left unacknowledged for three days, so a
-    // purchase that only ever arrived this way would quietly reverse itself.
-    await this.#finish(adapter, purchase, result.kind);
+    // Settle it here only once nobody else has, for long enough that nobody
+    // else is going to.
+    //
+    // Both sides settling is not harmless: the store answers the second
+    // consume with "you do not own this", and that reaches the buyer as a
+    // failed payment for goods they have already been given.
+    //
+    // The tempting rule is "settle when this notification is the first anyone
+    // has heard of the purchase", and it is wrong. Play publishes within a
+    // couple of hundred milliseconds, comfortably faster than a device's round
+    // trip to its own server, so the notification is routinely first for a
+    // purchase a device is actively handling. Whoever arrives first says
+    // nothing about who is going to settle it.
+    //
+    // Age does. A purchase seconds old is being handled right now by whatever
+    // made it; one that has sat unsettled for the whole window is not. Play
+    // auto-refunds anything unacknowledged after three days, so waiting ten
+    // minutes to find out costs nothing against that deadline.
+    const age = Date.now() - Date.parse(purchase.purchasedAt);
+    if (age >= SETTLE_GRACE_MS) {
+      await this.#finish(adapter, purchase, result.kind);
+    }
 
     return { ref, action: 'recorded', userId };
+  }
+
+  /**
+   * What kind of thing a SKU is, according to the catalogue.
+   *
+   * Asked whenever a client did not say, which is most of the time: a device
+   * knows what it put in the basket, but a restored purchase or one that
+   * settled days later arrives with a product id and nothing else.
+   *
+   * It matters more than it sounds. Google serves subscriptions and one-time
+   * products from two different endpoints, so a wrong or missing kind means
+   * asking the wrong one, and the answer to that is a 404 that reads as "Google
+   * Play has no record of that purchase" for a purchase that certainly exists.
+   *
+   * Null when nothing maps the SKU, which leaves the adapter to its own
+   * default rather than inventing an answer.
+   */
+  async #kindOf(
+    store: StoreId,
+    storeProductId: string | undefined,
+  ): Promise<ProductKind | undefined> {
+    if (!storeProductId) return undefined;
+    try {
+      const mapping = await this.#db.productFor(store, storeProductId);
+      return mapping?.kind;
+    } catch (e) {
+      this.#log.warn(`Could not look up "${storeProductId}"`, e);
+      return undefined;
+    }
   }
 
   /**

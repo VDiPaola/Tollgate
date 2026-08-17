@@ -25,6 +25,7 @@ import {
   type RecordResult,
   type RevokeResult,
   type StoreId,
+  type StoreProduct,
   TollgateError,
   type TollgateConfig,
 } from '@tollgate/core';
@@ -113,6 +114,7 @@ export class SupabasePersistence implements Persistence {
       productId: row.productId ?? null,
       kind: row.kind ?? null,
       granted: !!row.granted,
+      delivered: !!row.delivered,
       grantResult: row.grantResult ?? null,
       entitlements: (row.entitlements ?? []) as Entitlement[],
     };
@@ -163,6 +165,13 @@ export class SupabasePersistence implements Persistence {
   async entitlements(userId: string): Promise<Entitlement[]> {
     const rows = await this.#rpc<Entitlement[]>('get_entitlements', {
       p_user: userId,
+    });
+    return rows ?? [];
+  }
+
+  async storeProducts(store: StoreId): Promise<StoreProduct[]> {
+    const rows = await this.#rpc<StoreProduct[]>('store_skus', {
+      p_store: store,
     });
     return rows ?? [];
   }

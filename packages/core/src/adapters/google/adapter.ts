@@ -27,6 +27,7 @@ import {
   type DeveloperNotification,
   ONE_TIME_PRODUCT_NOTIFICATION,
   type ProductPurchase,
+  type ProductPurchaseV2,
   type PubSubPush,
   SUBSCRIPTION_NOTIFICATION,
   type SubscriptionPurchaseV2,
@@ -127,14 +128,14 @@ export class GoogleAdapter implements StoreAdapter {
     const oneOff = ref.kind === 'consumable' || ref.kind === 'non_consumable';
 
     if (oneOff) {
-      if (!ref.storeProductId) {
-        throw TollgateError.invalidRequest(
-          'A Google one-time purchase can only be read with its product id.',
-        );
-      }
-      const body = await this.#get<ProductPurchase>(
-        `/purchases/products/${encodeURIComponent(ref.storeProductId)}` +
-          `/tokens/${encodeURIComponent(ref.originalTransactionId)}`,
+      // productsv2, not products. Billing 8 lets a one-time product carry
+      // several purchase options and offers, and the v1 response has nowhere
+      // to put them. v2 also takes the token alone, so the product id is only
+      // needed as a fallback for naming the row.
+      const body = await this.#get<ProductPurchaseV2>(
+        `/purchases/productsv2/tokens/${
+          encodeURIComponent(ref.originalTransactionId)
+        }`,
       );
       if (!body) return null;
       return normalizeProduct(body, {
@@ -149,11 +150,40 @@ export class GoogleAdapter implements StoreAdapter {
         encodeURIComponent(ref.originalTransactionId)
       }`,
     );
-    if (!body) return null;
-    return normalizeSubscription(body, {
-      purchaseToken: ref.originalTransactionId,
-      fallbackProductId: ref.storeProductId,
-    });
+    if (body) {
+      return normalizeSubscription(body, {
+        purchaseToken: ref.originalTransactionId,
+        fallbackProductId: ref.storeProductId,
+      });
+    }
+
+    // Nothing there, and nobody told us what this token is. It may well be a
+    // one-time purchase, which lives on the other endpoint, so try that before
+    // concluding the purchase does not exist.
+    //
+    // Worth the extra request because of how the failure reads otherwise: a
+    // real, paid-for gem pack looked up on the subscriptions endpoint answers
+    // 404, and the customer is told Google Play has no record of a purchase
+    // they have just made and been charged for.
+    if (ref.kind === undefined) {
+      const product = await this.#get<ProductPurchaseV2>(
+        `/purchases/productsv2/tokens/${
+          encodeURIComponent(ref.originalTransactionId)
+        }`,
+      );
+      if (product) {
+        return normalizeProduct(product, {
+          purchaseToken: ref.originalTransactionId,
+          productId: ref.storeProductId,
+          // Unknown, and the catalogue corrects it when the purchase is
+          // recorded. Guessing consumable here would consume something that
+          // should only have been acknowledged.
+          consumable: false,
+        });
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -198,15 +228,21 @@ export class GoogleAdapter implements StoreAdapter {
    * real ones.
    */
   #alreadyFinished(purchase: NormalizedPurchase): boolean {
+    // Three response shapes end up in `raw`: a subscription, a productsv2
+    // one-time purchase, and a v1 one-time purchase on rows written before the
+    // move to v2. The enums and the integers mean the same things.
     const raw = purchase.raw as
-      | (SubscriptionPurchaseV2 & ProductPurchase)
+      | (SubscriptionPurchaseV2 & ProductPurchaseV2 & ProductPurchase)
       | undefined;
     if (!raw) return false;
-    if (purchase.kind === 'consumable') return raw.consumptionState === 1;
-    if (purchase.kind === 'subscription') {
-      return raw.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED';
+
+    if (purchase.kind === 'consumable') {
+      const v2 = raw.productLineItem?.[0]?.productOfferDetails?.consumptionState;
+      if (v2) return v2 === 'CONSUMPTION_STATE_CONSUMED';
+      return raw.consumptionState === 1;
     }
-    return raw.acknowledgementState === 1;
+    return raw.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED' ||
+      raw.acknowledgementState === 1;
   }
 
   /**

@@ -9,7 +9,9 @@
     "test:db": "deno test --allow-env --allow-net --allow-run --allow-read packages/supabase/test",
     "fmt": "deno fmt packages",
     "lint": "deno lint packages",
-    "probe:google": "deno run --env-file=.env --allow-env --allow-net scripts/probe-google.ts"
+    "vendor": "deno run --allow-read --allow-write scripts/vendor.ts",
+    "revoke:google": "deno run --allow-read=.env --allow-net scripts/revoke-google.ts",
+    "probe:google": "deno run --allow-read=.env --allow-net scripts/probe-google.ts"
   },
   "imports": {
     "@tollgate/core": "jsr:@tollgate/core@^0.1.0"

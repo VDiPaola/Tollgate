@@ -104,13 +104,18 @@ const SUBSCRIPTION_BODY = {
 };
 
 const PRODUCT_BODY = {
-  productId: 'gems_500',
   orderId: 'GPA.9999-8888-7777-66666',
-  purchaseTimeMillis: '1786000000000',
-  purchaseState: 0,
-  consumptionState: 0,
-  acknowledgementState: 0,
+  purchaseCompletionTime: '2026-08-16T09:00:00.000Z',
+  purchaseStateContext: { purchaseState: 'PURCHASED' },
+  acknowledgementState: 'ACKNOWLEDGEMENT_STATE_PENDING',
   obfuscatedExternalAccountId: ACCOUNT,
+  productLineItem: [{
+    productId: 'gems_500',
+    productOfferDetails: {
+      quantity: 1,
+      consumptionState: 'CONSUMPTION_STATE_YET_TO_BE_CONSUMED',
+    },
+  }],
 };
 
 function ok(body: unknown): () => Response {
@@ -138,32 +143,41 @@ Deno.test('a subscription is read from subscriptionsv2, by token alone', async (
   assertEquals(call.method, 'GET');
 });
 
-Deno.test('a one-time purchase is read from the products endpoint, which needs the SKU', async () => {
-  const { adapter, calls } = adapterWith({ '/purchases/products/': ok(PRODUCT_BODY) });
+Deno.test('a one-time purchase is read from productsv2, by token alone', async () => {
+  const { adapter, calls } = adapterWith({ '/purchases/productsv2/': ok(PRODUCT_BODY) });
 
-  await adapter.verify({
+  const p = await adapter.verify({
     token: 'token-gems',
     userId: 'u',
     appAccountToken: ACCOUNT,
     kind: 'consumable',
-    storeProductId: 'gems_500',
   });
 
-  const call = calls.find((c) => c.url.includes('/purchases/products/'))!;
-  assert(call.url.endsWith('/purchases/products/gems_500/tokens/token-gems'), call.url);
+  // v2 takes the token alone. The v1 endpoint needed the product id in the
+  // path, which meant a refund naming only a token could not be looked up.
+  const call = calls.find((c) => c.url.includes('/purchases/productsv2/'))!;
+  assert(call.url.endsWith('/purchases/productsv2/tokens/token-gems'), call.url);
+  assertEquals(p.storeProductId, 'gems_500');
+  assertEquals(p.status, 'active');
+  assertEquals(p.kind, 'consumable');
+  assertEquals(p.environment, 'production');
 });
 
-Deno.test('a one-time purchase with no SKU is refused rather than guessed at', async () => {
-  const { adapter } = adapterWith({});
-  const e = await assertRejects(() =>
-    adapter.verify({
-      token: 'token-gems',
-      userId: 'u',
-      appAccountToken: ACCOUNT,
-      kind: 'consumable',
-    })
-  );
-  assertEquals((e as TollgateError).code, 'invalid_request');
+Deno.test('a productsv2 test purchase is marked sandbox', async () => {
+  const { adapter } = adapterWith({
+    '/purchases/productsv2/': ok({
+      ...PRODUCT_BODY,
+      testPurchaseContext: { fopType: 'TEST' },
+    }),
+  });
+
+  const p = await adapter.verify({
+    token: 'token-gems',
+    userId: 'u',
+    appAccountToken: ACCOUNT,
+    kind: 'consumable',
+  });
+  assertEquals(p.environment, 'sandbox');
 });
 
 Deno.test('a purchase carrying somebody elses account token is refused', async () => {
@@ -434,3 +448,41 @@ function assertThrowsCode(fn: () => unknown): string {
   }
   throw new Error('Expected a throw.');
 }
+
+Deno.test('a token of unknown kind falls back to the other endpoint', async () => {
+  // The exact failure this exists for: a real, paid-for one-time purchase
+  // looked up on the subscriptions endpoint answers 404, and the customer is
+  // told Google Play has no record of a purchase they were just charged for.
+  const { adapter, calls } = adapterWith({
+    'subscriptionsv2': () => new Response('{}', { status: 404 }),
+    '/purchases/productsv2/': ok(PRODUCT_BODY),
+  });
+
+  const p = await adapter.refresh({
+    store: 'google',
+    originalTransactionId: 'token-gems',
+    // Deliberately unstated, as a restored purchase arrives.
+  });
+
+  assertEquals(p?.storeProductId, 'gems_500');
+  assertEquals(p?.status, 'active');
+  assert(calls.some((c) => c.url.includes('subscriptionsv2')));
+  assert(calls.some((c) => c.url.includes('/purchases/productsv2/')));
+});
+
+Deno.test('a stated kind is trusted, and costs no second request', async () => {
+  const { adapter, calls } = adapterWith({
+    'subscriptionsv2': () => new Response('{}', { status: 404 }),
+  });
+
+  const p = await adapter.refresh({
+    store: 'google',
+    originalTransactionId: 'token-gone',
+    kind: 'subscription',
+  });
+
+  assertEquals(p, null);
+  // No fallback. The caller said what it was, so a 404 means gone rather than
+  // looked up in the wrong place.
+  assertEquals(calls.filter((c) => c.url.includes('productsv2')).length, 0);
+});

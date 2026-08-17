@@ -9,3 +9,6 @@
 
 export { SupabasePersistence } from './persistence.ts';
 export type { SupabasePersistenceOptions } from './persistence.ts';
+
+export { createClientHandler, createNotificationHandler } from './handlers.ts';
+export type { ClientHandlerOptions } from './handlers.ts';

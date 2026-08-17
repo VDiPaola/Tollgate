@@ -19,8 +19,24 @@ export { GoogleAdapter } from './adapters/google/adapter.ts';
 export type { GoogleAdapterOptions } from './adapters/google/adapter.ts';
 export { GoogleAuth, parseServiceAccount } from './adapters/google/auth.ts';
 export type { ServiceAccount } from './adapters/google/auth.ts';
-export * from './adapters/google/normalize.ts';
+export {
+  moneyToMicros,
+  normalizeProduct as normalizeGoogleProduct,
+  normalizeSubscription as normalizeGoogleSubscription,
+  productStatus as googleProductStatus,
+  subscriptionStatus as googleSubscriptionStatus,
+} from './adapters/google/normalize.ts';
 export type * from './adapters/google/types.ts';
 
+export { StripeAdapter } from './adapters/stripe/adapter.ts';
+export type { StripeAdapterOptions } from './adapters/stripe/adapter.ts';
+export {
+  normalizePaymentIntent as normalizeStripePaymentIntent,
+  normalizeSubscription as normalizeStripeSubscription,
+  subscriptionStatus as stripeSubscriptionStatus,
+} from './adapters/stripe/normalize.ts';
+export type * from './adapters/stripe/types.ts';
+
 export { decodeJwt, signRs256, verifyGoogleIdToken } from './crypto/jwt.ts';
+export { hmacSha256Hex, timingSafeEqual } from './crypto/hmac.ts';
 export * from './crypto/encoding.ts';

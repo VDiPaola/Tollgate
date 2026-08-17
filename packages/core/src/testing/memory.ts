@@ -14,6 +14,7 @@ import type {
   Persistence,
   RecordResult,
   RevokeResult,
+  StoreProduct,
   TollgateConfig,
 } from '../persistence.ts';
 import type {
@@ -187,6 +188,7 @@ export class MemoryPersistence implements Persistence {
       productId: row.productId,
       kind: mapping?.kind ?? null,
       granted,
+      delivered: row.grantedAt != null,
       grantResult,
       entitlements: await this.entitlements(userId),
     };
@@ -287,6 +289,23 @@ export class MemoryPersistence implements Persistence {
     if (expiresAt == null) return true;
     const graceMs = this.#config.graceDays * 86_400_000;
     return Date.parse(expiresAt) > this.#now().getTime() - graceMs;
+  }
+
+  storeProducts(store: StoreId): Promise<StoreProduct[]> {
+    const out: StoreProduct[] = [];
+    for (const p of this.#products) {
+      for (const sku of p.skus) {
+        if (sku.store !== store) continue;
+        out.push({
+          productId: p.id,
+          kind: p.kind,
+          entitlementKey: p.entitlementKey ?? null,
+          storeProductId: sku.storeProductId,
+          basePlanId: sku.basePlanId ?? null,
+        });
+      }
+    }
+    return Promise.resolve(out);
   }
 
   productFor(

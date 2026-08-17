@@ -5,7 +5,7 @@
  * functions, so none of this needs credentials, a network, or a device.
  */
 
-import { assert, assertEquals } from '@std/assert';
+import { assert, assertEquals, assertFalse } from '@std/assert';
 
 import {
   moneyToMicros,
@@ -15,7 +15,7 @@ import {
   subscriptionStatus,
 } from '../src/adapters/google/normalize.ts';
 import type {
-  ProductPurchase,
+  ProductPurchaseV2,
   SubscriptionPurchaseV2,
 } from '../src/adapters/google/types.ts';
 import { purchaseEntitles } from '../src/types.ts';
@@ -148,7 +148,11 @@ Deno.test('an offer is reported without changing what is granted', () => {
       lineItems: [{
         productId: 'premium',
         expiryTime: '2026-09-01T10:00:00.000Z',
-        offerDetails: { basePlanId: 'monthly', offerId: 'welcome', offerTags: ['free-trial'] },
+        offerDetails: {
+          basePlanId: 'monthly',
+          offerId: 'welcome',
+          offerTags: ['free-trial'],
+        },
         autoRenewingPlan: { autoRenewEnabled: true },
       }],
     }),
@@ -160,80 +164,165 @@ Deno.test('an offer is reported without changing what is granted', () => {
 });
 
 // --- one-time products ------------------------------------------------------
+//
+// Read through `purchases.productsv2`, the shape Billing 8 produces. Almost
+// nothing sits where the v1 response put it: the product id moved into a line
+// item, the purchase state into a context object, quantity and consumption
+// state under the line item's offer details, and the test flag from a
+// falsy-zero enum to the presence of an object.
 
-function product(over: Partial<ProductPurchase> = {}): ProductPurchase {
+function product(over: Partial<ProductPurchaseV2> = {}): ProductPurchaseV2 {
   return {
-    productId: 'gems_500',
     orderId: 'GPA.3355-9999-8888-77777',
-    purchaseTimeMillis: '1786000000000',
-    purchaseState: 0,
-    consumptionState: 0,
-    acknowledgementState: 0,
-    quantity: 1,
+    purchaseCompletionTime: '2026-08-16T09:00:00.000Z',
+    purchaseStateContext: { purchaseState: 'PURCHASED' },
+    acknowledgementState: 'ACKNOWLEDGEMENT_STATE_PENDING',
     obfuscatedExternalAccountId: ACCOUNT,
+    productLineItem: [{
+      productId: 'gems_500',
+      productOfferDetails: {
+        quantity: 1,
+        consumptionState: 'CONSUMPTION_STATE_YET_TO_BE_CONSUMED',
+      },
+    }],
     ...over,
   };
 }
 
+const gems = { purchaseToken: TOKEN, consumable: true };
+
 Deno.test('a settled one-time purchase normalizes as active', () => {
-  const p = normalizeProduct(product(), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
+  const p = normalizeProduct(product(), gems);
 
   assertEquals(p.kind, 'consumable');
   assertEquals(p.status, 'active');
+  assertEquals(p.storeProductId, 'gems_500');
   assertEquals(p.storeTransactionId, 'GPA.3355-9999-8888-77777');
+  assertEquals(p.originalTransactionId, TOKEN);
+  assertEquals(p.purchasedAt, '2026-08-16T09:00:00.000Z');
   assertEquals(p.expiresAt, null);
   assertEquals(p.willRenew, false);
   assertEquals(p.appAccountToken, ACCOUNT);
 });
 
-Deno.test('a pending one-time purchase grants nothing yet', () => {
+Deno.test('every one-time purchase state maps somewhere deliberate', () => {
+  assertEquals(productStatus('PURCHASED'), 'active');
   // The slow test card, and the real thing behind it: a buyer who chose a
   // payment method that takes days. Delivering here hands over goods nobody
   // has paid for.
-  assertEquals(productStatus({ purchaseState: 2 }), 'pending');
-  const p = normalizeProduct(product({ purchaseState: 2 }), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
-  assertEquals(p.status, 'pending');
+  assertEquals(productStatus('PENDING'), 'pending');
+  assertEquals(productStatus('CANCELLED'), 'expired');
+  assertEquals(productStatus('PURCHASE_STATE_UNSPECIFIED'), 'pending');
+  assertEquals(productStatus(undefined), 'pending');
 });
 
-Deno.test('purchaseType 0 means test, and absent means real', () => {
-  // The trap: 0 is falsy, so a truthiness check reads every real purchase as a
-  // test one and grants nothing to anybody who actually paid.
-  const real = normalizeProduct(product(), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
+Deno.test('a pending one-time purchase grants nothing yet', () => {
+  const p = normalizeProduct(
+    product({ purchaseStateContext: { purchaseState: 'PENDING' } }),
+    gems,
+  );
+  assertEquals(p.status, 'pending');
+  assertFalse(purchaseEntitles(p, new Date('2026-08-16T12:00:00Z')));
+});
+
+Deno.test('a test purchase is marked sandbox by the presence of a context', () => {
+  const real = normalizeProduct(product(), gems);
   assertEquals(real.environment, 'production');
 
-  const test = normalizeProduct(product({ purchaseType: 0 }), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
+  // v1 signalled this with `purchaseType: 0`, where the trap was that 0 is
+  // falsy and a truthiness check read every real purchase as a test one. v2
+  // signals it by the object being there at all.
+  const test = normalizeProduct(
+    product({ testPurchaseContext: { fopType: 'TEST' } }),
+    gems,
+  );
   assertEquals(test.environment, 'sandbox');
-
-  const promo = normalizeProduct(product({ purchaseType: 1 }), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
-  assertEquals(promo.environment, 'production');
-  assertEquals(promo.offerType, 'promo');
 });
 
-Deno.test('quantity survives, because a consumable can be bought in multiples', () => {
-  const p = normalizeProduct(product({ quantity: 3 }), {
-    purchaseToken: TOKEN,
-    productId: 'gems_500',
-    consumable: true,
-  });
+Deno.test('quantity comes off the offer, since a consumable sells in multiples', () => {
+  const p = normalizeProduct(
+    product({
+      productLineItem: [{
+        productId: 'gems_500',
+        productOfferDetails: { quantity: 3 },
+      }],
+    }),
+    gems,
+  );
   assertEquals(p.quantity, 3);
+
+  // And defaults to one rather than to nothing when the offer omits it.
+  const bare = normalizeProduct(
+    product({ productLineItem: [{ productId: 'gems_500' }] }),
+    gems,
+  );
+  assertEquals(bare.quantity, 1);
+});
+
+Deno.test('a Billing 8 offer on a one-time product is reported, not acted on', () => {
+  const p = normalizeProduct(
+    product({
+      productLineItem: [{
+        productId: 'gems_500',
+        productOfferDetails: {
+          offerId: 'launch-discount',
+          purchaseOptionId: 'standard',
+          quantity: 1,
+        },
+      }],
+    }),
+    gems,
+  );
+  assertEquals(p.offerType, 'promo');
+  // Whatever it was bought at, it is the same product delivering the same goods.
+  assertEquals(p.storeProductId, 'gems_500');
+  assertEquals(p.status, 'active');
+  // The purchase option shares the base plan slot, because it plays the same
+  // part in the mapping: one SKU, several ways to buy it.
+  assertEquals(p.basePlanId, 'standard');
+});
+
+Deno.test('a purchase option lets two ways of buying one SKU be told apart', () => {
+  const small = normalizeProduct(
+    product({
+      productLineItem: [{
+        productId: 'gems',
+        productOfferDetails: { purchaseOptionId: 'gems-500', quantity: 1 },
+      }],
+    }),
+    gems,
+  );
+  const large = normalizeProduct(
+    product({
+      productLineItem: [{
+        productId: 'gems',
+        productOfferDetails: { purchaseOptionId: 'gems-5000', quantity: 1 },
+      }],
+    }),
+    gems,
+  );
+
+  assertEquals(small.storeProductId, large.storeProductId);
+  // Same SKU, different option. Without carrying this, a catalogue could not
+  // grant a different number of gems for the two, because nothing downstream
+  // would be able to tell them apart.
+  assert(small.basePlanId !== large.basePlanId);
+  assertEquals(small.basePlanId, 'gems-500');
+  assertEquals(large.basePlanId, 'gems-5000');
+});
+
+Deno.test('a product sold only one way carries no variant', () => {
+  // Which is what makes a null `base_plan_id` row in store_products match it.
+  const p = normalizeProduct(product(), gems);
+  assertEquals(p.basePlanId, null);
+});
+
+Deno.test('a non-consumable is told apart only by the catalogue', () => {
+  // Play's response is identical either way. `consumable` comes from the host
+  // app's own product table, and it decides consume versus acknowledge.
+  const lifetime = normalizeProduct(product(), {
+    purchaseToken: TOKEN,
+    consumable: false,
+  });
+  assertEquals(lifetime.kind, 'non_consumable');
 });

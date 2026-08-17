@@ -12,7 +12,8 @@ import type {
 } from '../../types.ts';
 import type {
   Money,
-  ProductPurchase,
+  ProductPurchaseState,
+  ProductPurchaseV2,
   SubscriptionLineItem,
   SubscriptionPurchaseV2,
 } from './types.ts';
@@ -54,15 +55,15 @@ export function subscriptionStatus(state: string | undefined): PurchaseStatus {
 }
 
 /** Play's one-time purchase states, mapped onto Tollgate's. */
-export function productStatus(purchase: ProductPurchase): PurchaseStatus {
-  switch (purchase.purchaseState) {
-    case 0:
+export function productStatus(state: ProductPurchaseState | undefined): PurchaseStatus {
+  switch (state) {
+    case 'PURCHASED':
       return 'active';
-    case 2:
+    case 'PENDING':
       // A deferred payment: the buyer chose a slow method and the money has
       // not arrived. Delivering here is delivering goods nobody paid for.
       return 'pending';
-    case 1:
+    case 'CANCELLED':
       return 'expired';
     default:
       return 'pending';
@@ -165,25 +166,34 @@ function offerType(
 
 export interface ProductContext {
   purchaseToken: string;
-  productId: string;
+  /**
+   * A fallback product id. Optional because `productsv2` takes the token alone
+   * and names the product itself; this only fills in when a caller knew the SKU
+   * and the response somehow did not carry it.
+   */
+  productId?: string;
   /** True when the mapped product is a consumable, which Play does not say. */
   consumable: boolean;
 }
 
 /**
- * A `ProductPurchase` as a [NormalizedPurchase].
+ * A `ProductPurchaseV2` as a [NormalizedPurchase].
  *
  * Play does not distinguish consumables from non-consumables; that is a
  * property of how the app treats the product, so it comes from the caller's
  * own catalogue rather than from the API.
+ *
+ * Almost nothing sits where the v1 response put it. The product id moved into
+ * a line item, the purchase state into a context object, quantity and
+ * consumption state under the line item's offer details, and the test flag
+ * from a falsy-zero enum to the presence of an object.
  */
 export function normalizeProduct(
-  purchase: ProductPurchase,
+  purchase: ProductPurchaseV2,
   ctx: ProductContext,
 ): NormalizedPurchase {
-  const purchasedAt = purchase.purchaseTimeMillis
-    ? new Date(Number(purchase.purchaseTimeMillis)).toISOString()
-    : new Date().toISOString();
+  const item = purchase.productLineItem?.[0];
+  const offer = item?.productOfferDetails;
 
   return {
     store: 'google',
@@ -191,22 +201,28 @@ export function normalizeProduct(
     // in when Play omits it, which it does for some promotional grants.
     storeTransactionId: purchase.orderId ?? ctx.purchaseToken,
     originalTransactionId: ctx.purchaseToken,
-    storeProductId: purchase.productId ?? ctx.productId,
-    basePlanId: null,
+    storeProductId: item?.productId ?? ctx.productId ?? '',
+    // Billing 8's purchase options are the one-time analogue of a
+    // subscription's base plan: one SKU sold several ways, at several prices.
+    // They share the slot because they play the same part in the mapping, and
+    // dropping this would make two purchase options of one product
+    // indistinguishable to a catalogue that wanted to price them apart.
+    basePlanId: offer?.purchaseOptionId ?? null,
     kind: ctx.consumable ? 'consumable' : 'non_consumable',
-    status: productStatus(purchase),
-    // Absent means an ordinary purchase; 0 specifically means test. Checking
-    // for truthiness here would read a real purchase as a test one, because 0
-    // is falsy.
-    environment: purchase.purchaseType === 0 ? 'sandbox' : 'production',
-    offerType: purchase.purchaseType === 1 ? 'promo' : 'none',
-    purchasedAt,
+    status: productStatus(purchase.purchaseStateContext?.purchaseState),
+    // Present only on a licence tester's purchase, and the only thing that
+    // distinguishes one from a real sale.
+    environment: purchase.testPurchaseContext ? 'sandbox' : 'production',
+    // Billing 8 lets a one-time product carry offers. Reporting only: the
+    // product bought is the same either way.
+    offerType: offer?.offerId ? 'promo' : 'none',
+    purchasedAt: purchase.purchaseCompletionTime ?? new Date().toISOString(),
     // A one-time purchase does not expire. A consumable is finished by being
     // delivered, which is tracked on the Tollgate row, not by a date.
     expiresAt: null,
     willRenew: false,
     revokedAt: null,
-    quantity: purchase.quantity ?? 1,
+    quantity: offer?.quantity ?? 1,
     appAccountToken: purchase.obfuscatedExternalAccountId ?? null,
     priceAmountMicros: null,
     priceCurrency: null,

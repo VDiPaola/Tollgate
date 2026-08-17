@@ -22,7 +22,18 @@ They assume `auth.users`, `auth.uid()` and the `anon` / `authenticated` /
 schemas = ["public", "graphql_public", "tollgate"]
 ```
 
-Without this every call comes back as a 404 that reads like a missing function.
+Without this every call fails with `Invalid schema: tollgate`.
+
+Saving the file is not enough on a stack that is already running: PostgREST
+reads its schema list from an environment variable fixed when its container was
+created. Restart the stack, or apply it live from the database instead:
+
+```sql
+alter role authenticator
+  set pgrst.db_schemas = 'public,graphql_public,tollgate';
+notify pgrst, 'reload config';
+notify pgrst, 'reload schema';
+```
 
 **3. Describe what you sell.** In your own migration, not in the pack:
 

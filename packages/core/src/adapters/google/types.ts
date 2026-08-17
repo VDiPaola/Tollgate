@@ -77,7 +77,67 @@ export interface SubscriptionPurchaseV2 {
   pausedStateContext?: unknown;
 }
 
-/** purchases.products.get */
+// --- One-time products ------------------------------------------------------
+//
+// Read through `purchases.productsv2`, which is the shape Billing 8 produces:
+// a one-time product can now carry several purchase options and offers, and
+// the v1 `purchases.products.get` response has nowhere to put them. The two
+// responses share almost no field names, so this is a different type rather
+// than an extension of the old one.
+//
+// Acknowledging and consuming are still the v1 endpoints. There is no v2 of
+// either, which is a wrinkle in Google's API rather than in this code.
+
+export type ProductPurchaseState =
+  | 'PURCHASE_STATE_UNSPECIFIED'
+  | 'PURCHASED'
+  | 'CANCELLED'
+  | 'PENDING';
+
+export type AcknowledgementState =
+  | 'ACKNOWLEDGEMENT_STATE_UNSPECIFIED'
+  | 'ACKNOWLEDGEMENT_STATE_PENDING'
+  | 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED';
+
+export type ConsumptionState =
+  | 'CONSUMPTION_STATE_UNSPECIFIED'
+  | 'CONSUMPTION_STATE_YET_TO_BE_CONSUMED'
+  | 'CONSUMPTION_STATE_CONSUMED';
+
+export interface ProductOfferDetails {
+  offerId?: string;
+  offerTags?: string[];
+  purchaseOptionId?: string;
+  offerToken?: string;
+  quantity?: number;
+  refundableQuantity?: number;
+  consumptionState?: ConsumptionState;
+}
+
+export interface ProductLineItem {
+  productId?: string;
+  productOfferDetails?: ProductOfferDetails;
+}
+
+export interface ProductPurchaseV2 {
+  productLineItem?: ProductLineItem[];
+  purchaseStateContext?: { purchaseState?: ProductPurchaseState };
+  /** Present only on a licence tester's purchase. The whole of the signal. */
+  testPurchaseContext?: { fopType?: string };
+  orderId?: string;
+  obfuscatedExternalAccountId?: string;
+  obfuscatedExternalProfileId?: string;
+  regionCode?: string;
+  purchaseCompletionTime?: string;
+  acknowledgementState?: AcknowledgementState;
+}
+
+/**
+ * purchases.products.get, the v1 shape.
+ *
+ * Kept only because `finish` reads acknowledgement and consumption state off
+ * whatever was stored, and rows written before the move to v2 carry this.
+ */
 export interface ProductPurchase {
   productId?: string;
   purchaseToken?: string;

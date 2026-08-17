@@ -118,16 +118,20 @@ do $$
 declare
   u uuid := t_user('11111111-1111-4111-8111-000000000005');
 begin
-  -- Last thing the store said: active until yesterday. Nothing since. This is
-  -- ordinary renewal lag and must not log a paying customer out.
+  -- A monthly subscription whose period ended yesterday, with nothing said
+  -- since. Ordinary renewal lag, and it must not log a paying customer out.
   perform tollgate.record_purchase(u, t_purchase(
-    p_txn => 'e1', p_original => 'e', p_expires => now() - interval '1 day'
+    p_txn => 'e1', p_original => 'e',
+    p_purchased => now() - interval '30 days',
+    p_expires => now() - interval '1 day'
   ));
   perform t_assert(tollgate.has_entitlement(u, 'premium'), '3-day window absorbs lag');
 
   -- Five days of silence is no longer ordinary.
   perform tollgate.record_purchase(u, t_purchase(
-    p_txn => 'e1', p_original => 'e', p_expires => now() - interval '5 days'
+    p_txn => 'e1', p_original => 'e',
+    p_purchased => now() - interval '35 days',
+    p_expires => now() - interval '5 days'
   ));
   perform t_assert(not tollgate.has_entitlement(u, 'premium'), 'past the window it ends');
 
@@ -135,6 +139,7 @@ begin
   perform tollgate.record_purchase(u, t_purchase(
     p_txn => 'e1', p_original => 'e',
     p_status => 'expired', p_will_renew => false,
+    p_purchased => now() - interval '30 days',
     p_expires => now() - interval '1 day'
   ));
   perform t_assert(
@@ -142,6 +147,52 @@ begin
     'what the store says beats the window'
   );
   perform t_ok('the grace window is slack for silence, not an override');
+end
+$$;
+
+-- --- the window never outlasts the period it is covering --------------------
+do $$
+declare
+  u uuid := t_user('11111111-1111-4111-8111-00000000000f');
+begin
+  -- A store test subscription bills every few minutes. A flat three days of
+  -- slack kept Premium switched on for hours after Google had marked it
+  -- expired, while the store's own screen said there was no subscription.
+  -- Forty minutes past a thirty minute period is more than a whole period
+  -- late, so it is over however the window is measured.
+  perform tollgate.record_purchase(u, t_purchase(
+    p_txn => 'n1', p_original => 'n',
+    p_purchased => now() - interval '70 minutes',
+    p_expires => now() - interval '40 minutes'
+  ));
+  perform t_assert(
+    not tollgate.has_entitlement(u, 'premium'),
+    'a period and a third past the end is not renewal lag'
+  );
+
+  -- One minute past the same period is still ordinary lag.
+  perform tollgate.record_purchase(u, t_purchase(
+    p_txn => 'n1', p_original => 'n',
+    p_purchased => now() - interval '31 minutes',
+    p_expires => now() - interval '1 minute'
+  ));
+  perform t_assert(
+    tollgate.has_entitlement(u, 'premium'),
+    'but a minute is not'
+  );
+
+  -- And a monthly subscription still gets the full configured window.
+  perform t_eq(
+    tollgate.grace_for(now() - interval '30 days', now()),
+    interval '3 days',
+    'a long period is capped by the configured days, not by itself'
+  );
+  perform t_eq(
+    tollgate.grace_for(now() - interval '30 minutes', now()),
+    interval '30 minutes',
+    'and a short one is capped by itself'
+  );
+  perform t_ok('the window never outlasts the period it is covering');
 end
 $$;
 

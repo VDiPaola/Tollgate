@@ -115,9 +115,16 @@ export interface NormalizedPurchase {
   storeProductId: string;
 
   /**
-   * Google subscriptions sell a product through one of several base plans, and
-   * the plan is what carries the price and period. Null on stores that have no
-   * such concept.
+   * The variant of the SKU that was bought, where a store has such a thing.
+   *
+   * Google fills this two ways. A subscription is sold through one of several
+   * **base plans**, which carry the price and the billing period. A one-time
+   * product under Billing 8 is sold through one of several **purchase
+   * options**, which do the same job for a single purchase. They share this
+   * field because they play the same part: one SKU, several ways to buy it,
+   * possibly mapping to different products.
+   *
+   * Null on stores with no such concept, and null when the store did not say.
    */
   basePlanId?: string | null;
 

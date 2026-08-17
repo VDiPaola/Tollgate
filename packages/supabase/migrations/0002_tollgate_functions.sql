@@ -131,6 +131,37 @@ as $$
   select grace_days from tollgate.config where id;
 $$;
 
+-- How much slack an entitlement gets past its expiry.
+--
+-- The window exists to cover the gap between a renewal being charged and
+-- anybody being told about it, and a flat number of days is the wrong shape for
+-- that. It has to be small enough not to outlast the thing it is covering: a
+-- subscription that bills weekly and gets three days of slack is being given
+-- most of a period for free, and one that bills every five minutes, as a store
+-- test subscription does, is served for days after it ended.
+--
+-- So it is capped at one billing period. Nothing gets more grace than the
+-- length of the thing it is waiting on, and a monthly subscription still gets
+-- the full configured window.
+create function tollgate.grace_for(
+  p_period_start timestamptz,
+  p_expires_at timestamptz
+)
+returns interval
+language sql
+stable
+set search_path = ''
+as $$
+  select case
+    when p_period_start is null or p_expires_at is null
+      then make_interval(days => tollgate.grace_days())
+    else least(
+      make_interval(days => tollgate.grace_days()),
+      greatest(p_expires_at - p_period_start, interval '0')
+    )
+  end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Customers and identity
 -- ---------------------------------------------------------------------------
@@ -325,7 +356,8 @@ as $$
         'key', e.key,
         'active', e.active and (
           e.expires_at is null
-          or e.expires_at > now() - make_interval(days => tollgate.grace_days())
+          or e.expires_at >
+             now() - tollgate.grace_for(e.period_start, e.expires_at)
         ),
         'store', e.store,
         'productId', e.product_id,
@@ -360,7 +392,7 @@ as $$
       and e.active
       and (
         e.expires_at is null
-        or e.expires_at > now() - make_interval(days => tollgate.grace_days())
+        or e.expires_at > now() - tollgate.grace_for(e.period_start, e.expires_at)
       )
   );
 $$;
@@ -455,6 +487,35 @@ as $$
     'basePlanId', m.base_plan_id
   )
   from tollgate.map_sku(p_store, p_store_product_id, p_base_plan_id) m;
+$$;
+
+-- Which SKU each product is sold under, in one store.
+--
+-- The reverse of product_for, and the direction a client needs: an app knows it
+-- wants to sell `premium_monthly` and has to ask a store for a SKU it has never
+-- heard of. Without this the store ids would have to be compiled into the app,
+-- where changing one means shipping a release.
+create function tollgate.store_skus(p_store text)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(jsonb_agg(r order by r ->> 'productId'), '[]'::jsonb)
+  from (
+    select jsonb_build_object(
+      'productId', pr.id,
+      'kind', pr.kind,
+      'entitlementKey', pr.entitlement_key,
+      'storeProductId', sp.store_product_id,
+      'basePlanId', sp.base_plan_id
+    ) as r
+    from tollgate.store_products sp
+    join tollgate.products pr on pr.id = sp.product_id
+    where sp.store = p_store
+      and pr.enabled
+  ) s;
 $$;
 
 create function tollgate.get_config()
@@ -583,6 +644,15 @@ begin
     'created', v_prior is null,
     'purchaseId', v_row.id,
     'productId', v_map.product_id,
+    -- Whether the goods are delivered for this purchase, by anybody.
+    --
+    -- This is the question a caller actually has, and `granted` is not it:
+    -- that says only whether THIS call ran the hook. A store notification
+    -- routinely arrives a couple of hundred milliseconds before the device
+    -- that made the purchase, does the delivering, and leaves the device's own
+    -- call reporting `granted: false` for goods that were very much handed
+    -- over. Reporting that to a buyer reads as nothing having happened.
+    'delivered', v_granted or v_row.granted_at is not null,
     -- The catalogue's kind, which the caller needs because a store may not
     -- know it. Google cannot tell a consumable from a non-consumable, and the
     -- difference decides whether it is told to consume or only to acknowledge.
