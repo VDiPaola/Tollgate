@@ -219,6 +219,39 @@ void main() {
     expect(backend.verifyCalls, 0);
   });
 
+  test('backing out answers the caller, even naming no product', () async {
+    // What a real cancellation looks like. Play reports "the flow ended" with
+    // no purchase attached, so the plugin invents one carrying an empty product
+    // id and an empty token. This test previously passed only because it
+    // emitted a matching SKU, which the store never does here: the SKU guard
+    // then swallowed the outcome, the caller waited for ever, and every later
+    // purchase was refused as "another purchase is already in progress".
+    final future = tollgate.purchase(_product);
+    await Future<void>.delayed(Duration.zero);
+    store.emit(StorePurchaseStatus.cancelled, token: '', productId: '');
+
+    expect((await future).outcome, PurchaseOutcome.cancelled);
+
+    // And the client is free again rather than stuck behind a purchase that
+    // will never resolve.
+    final second = tollgate.purchase(_product);
+    await Future<void>.delayed(Duration.zero);
+    store.emit(StorePurchaseStatus.purchased);
+    expect((await second).succeeded, isTrue);
+  });
+
+  test('a failure naming no product answers the caller too', () async {
+    // The same shape as a cancellation, and the same trap: a billing error
+    // raised before any purchase exists carries no SKU either.
+    final future = tollgate.purchase(_product);
+    await Future<void>.delayed(Duration.zero);
+    store.emit(StorePurchaseStatus.error, token: '', productId: '');
+
+    final result = await future;
+    expect(result.outcome, PurchaseOutcome.failed);
+    expect(backend.verifyCalls, 0);
+  });
+
   test('a pending purchase grants nothing yet', () async {
     final future = tollgate.purchase(_product);
     await Future<void>.delayed(Duration.zero);

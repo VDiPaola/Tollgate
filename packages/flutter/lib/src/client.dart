@@ -353,10 +353,21 @@ class Tollgate {
   /// settled long after the fact. And purchases for a different SKU than the
   /// one in flight, which would answer the buyer's question with somebody
   /// else's answer.
+  ///
+  /// An outcome that names **no** product is the exception, and it has to be,
+  /// because that is what backing out of the payment sheet looks like. A
+  /// cancellation is reported by the store as "the flow you started ended" with
+  /// no purchase attached, so the plugin synthesises one carrying an empty
+  /// product id and an empty token. Nothing else produces those: they exist
+  /// only in response to a purchase this client asked for. Matching them on SKU
+  /// leaves the caller waiting for an answer that has already arrived and can
+  /// never arrive again, which the buyer sees as a spinner that never stops and
+  /// then a button that refuses them for the rest of the session.
   void _settle(PurchaseResult result, [StorePurchase? purchase]) {
     final pending = _pending;
     if (pending == null) return;
     if (purchase != null &&
+        purchase.storeProductId.isNotEmpty &&
         _pendingProductId != null &&
         purchase.storeProductId != _pendingProductId) {
       _log(

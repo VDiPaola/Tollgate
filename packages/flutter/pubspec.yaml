@@ -2,7 +2,7 @@ name: tollgate
 description: >-
   One purchase API over Google Play, the App Store and Stripe, backed by your
   own Supabase project.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/enzo/tollgate
 publish_to: none
 
