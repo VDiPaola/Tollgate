@@ -1,13 +1,24 @@
 # Google Play setup
 
+[← Documentation](README.md) · [Project overview](../README.md)
+
 Everything needed to make Tollgate's Google adapter work, and which environment
 variable each step produces.
 
-Google Play has **no sandbox environment**. Unlike Stripe and Apple, there is one
-set of credentials and one API. A purchase is a test purchase because of *who
-bought it*, not because of which environment it happened in, and the API marks
-it with a `testPurchase` field. Everything below is therefore set up once and
-used by both testing and production.
+> [!IMPORTANT]
+> Google Play has **no separate sandbox environment**. Unlike Stripe and Apple,
+> there is one set of credentials and one API. A purchase is a test purchase
+> because of *who bought it*, not because of which environment it happened in,
+> and the API marks it with a `testPurchase` field. Everything below is
+> therefore set up once and used by both testing and production.
+
+## Before you begin
+
+- Create or identify the Play Console app for your Android package.
+- Make sure you can manage Google Cloud IAM, Pub/Sub, and Play Console users.
+- Keep [`.env.example`](../.env.example) open; every generated value maps to a
+  documented environment variable there.
+- Plan for a physical Android device signed into a licence-tester account.
 
 ## Order of work
 
@@ -41,6 +52,7 @@ android {
 A mismatch fails every purchase attempt with an error that does not mention the
 package name, so it is worth checking rather than assuming.
 
+> [!NOTE]
 > `GOOGLE_PLAY_PACKAGE_NAME` is this value.
 
 Also add at least one Google account under **Setup > License testing**. License
@@ -78,6 +90,7 @@ base64 -w0 service-account.json                 # Linux, macOS, Git Bash
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\service-account.json"))
 ```
 
+> [!NOTE]
 > `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` is the encoded output. It carries the
 > client email, the private key and the project id, so nothing else has to be
 > kept in step with it.
@@ -135,6 +148,7 @@ Authentication is not optional. The endpoint is public, so the Google-signed
 token on each push request is the only thing separating a real delivery from any
 other POST that reaches it. Tollgate rejects anything it cannot verify.
 
+> [!NOTE]
 > `GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL` is the nominated service account.
 > `GOOGLE_PUBSUB_AUDIENCE` is the audience value.
 
@@ -149,6 +163,7 @@ projects/<project-id>/topics/play-rtdn
 
 **Send test notification** confirms the wiring before any handler exists.
 
+> [!NOTE]
 > `GOOGLE_RTDN_TOPIC` is the full topic name. It is recorded for reference and
 > is not read at runtime: a Pub/Sub push carries the *subscription* name, not
 > the topic, so there is nothing to compare it against. The guard against a
@@ -295,3 +310,8 @@ the second. They are development conveniences and are not read at runtime.
 - [Real-time developer notifications](https://developer.android.com/google/play/billing/getting-ready#configure-rtdn)
 - [purchases.subscriptionsv2.get](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2/get)
 - [Play Billing Lab](https://play.google.com/store/apps/details?id=com.google.android.apps.play.billingtestcompanion)
+
+## Next step
+
+Return to the [host integration guide](host-integration.md#4-the-client) to add
+the client and prove a purchase end to end.

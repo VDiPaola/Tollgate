@@ -30,7 +30,8 @@ jobs:
 
       # openssl is present on the runner. The certificate and JWS tests build a
       # chain they hold every key to, which is the only way to test that a
-      # forged one is refused, and they fail rather than skip without it.
+      # forged one is refused. Those cases are skipped on machines without it,
+      # so keeping it available here gives CI the complete suite.
       - name: Unit tests
         run: deno task test
 

@@ -1,6 +1,16 @@
 # @tollgate/supabase
 
+[← Project overview](../../README.md) · [Documentation](../../docs/README.md)
+
 The SQL pack and its Postgres-backed `Persistence`.
+
+It installs into your own Supabase project. Tollgate does not operate a hosted
+database or receive a copy of your purchase data.
+
+> [!IMPORTANT]
+> Run the installation against a development project first. The migrations
+> create a new schema, tables, functions, grants, and row-level security
+> policies.
 
 ## Installing into a project
 
@@ -165,3 +175,9 @@ installs the pack, runs the cases, and destroys it. It touches no project
 database. Starting from bare Postgres rather than a Supabase stack is
 deliberate: it proves the pack depends on nothing but the three things listed
 in step 1.
+
+## Next steps
+
+- Continue with the [host integration guide](../../docs/host-integration.md#2-the-catalogue-and-the-hooks).
+- Configure [Google Play](../../docs/google-setup.md) or
+  [Apple's App Store](../../docs/apple-setup.md).

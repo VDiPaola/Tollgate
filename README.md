@@ -1,169 +1,266 @@
 # Tollgate
 
-One purchase API over Apple's App Store, Google Play and Stripe, backed by your
-own Postgres.
+**One purchase API for Google Play, Apple's App Store, and Stripe — backed by
+your own Supabase project.**
 
-Tollgate is a **library, not a service**. There is no Tollgate server holding
-your customers. You run the migrations against your own Supabase project, and
-that project's database is the only place your entitlements live. Reuse means
-installing it again in the next project, not pointing the next project at
-shared infrastructure.
+[![CI](https://github.com/VDiPaola/Tollgate/actions/workflows/ci.yml/badge.svg)](https://github.com/VDiPaola/Tollgate/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.3-blue.svg)](https://github.com/VDiPaola/Tollgate/tree/v0.1.3)
 
-## Why it exists
+[Get started](docs/host-integration.md) ·
+[Browse the docs](docs/README.md) ·
+[Flutter client](packages/flutter/README.md) ·
+[Supabase package](packages/supabase/README.md)
 
-Apple and Google require their own payment processors for digital content
-bought inside an app, so a Flutter app that also sells on the web ends up with
-three payment processors, three notification formats, three subscription state
-machines and three ideas of what "cancelled" means. Tollgate normalises all of
-that into one table your app reads:
+> [!IMPORTANT]
+> Tollgate is pre-release software. Google Play has been tested end to end on
+> real hardware; the Stripe and Apple integrations have automated coverage but
+> have not yet processed live purchases. See [project status](#project-status)
+> before using Tollgate in production.
+
+Tollgate is an open-source library, not a hosted billing service. It verifies
+purchases, normalises subscription state, and stores entitlements in a
+`tollgate` schema inside **your** Postgres database. There is no Tollgate account
+to create and no third-party Tollgate server holding customer data.
+
+## Why Tollgate?
+
+A Flutter app that sells digital access on mobile and the web can end up with
+three payment providers, three webhook formats, and three definitions of an
+active subscription. Tollgate translates those store-specific events into one
+entitlement model:
 
 ```sql
-select active from tollgate.entitlements where user_id = $1 and key = 'premium';
+select tollgate.has_entitlement(auth.uid(), 'premium');
 ```
 
-## What it does and does not do
+Your app asks a simple question — “does this user have premium?” — while
+Tollgate handles verification, renewals, refunds, and missed-notification
+recovery on the server.
 
-It does:
+### What you get
 
-- verify purchases server-side against the store that issued them, so nothing a
-  client sends decides entitlement
-- keep one normalised subscription state across stores, updated both by store
-  notifications and by direct refresh, so a missed webhook is recoverable
-- deliver consumable purchases exactly once, into a SQL function you name
-- report refunds and chargebacks, flag the customer, and hand the clawback
-  decision back to your app
-- map store notifications back to your users, which stores will not do for you
+- **Server-side verification.** Client-provided purchase data never decides
+  access by itself.
+- **One entitlement model.** Google Play, the App Store, and Stripe resolve to
+  the same Postgres records.
+- **Reliable subscription updates.** Signed store notifications keep state
+  current, while explicit refreshes repair missed events.
+- **Exactly-once consumable delivery.** Your SQL hook grants coins, credits, or
+  other consumables in the same transaction that records delivery.
+- **Refund and chargeback handling.** Tollgate flags affected customers and
+  lets your application choose its clawback policy.
+- **Data ownership.** Purchases and entitlements remain in your Supabase
+  project.
 
-It deliberately does not:
+### What stays in your application
 
-- host a paywall editor, remote offering configuration, or A/B testing
-- store or see a card number
-- know what your products actually grant. A gem pack is a `grant_payload` blob
-  and the name of one of your own functions
+Tollgate deliberately does not provide a paywall editor, pricing dashboard,
+checkout builder, tax engine, or A/B testing. It also never handles card
+details. Your application still decides:
+
+- what each product unlocks;
+- how the paywall looks;
+- how Stripe Checkout is created on the web; and
+- what happens to a consumed item after a refund.
+
+## How it works
+
+```mermaid
+flowchart LR
+    app[Flutter app] -->|Starts purchase| stores[Google Play / App Store]
+    stores -->|Purchase proof| app
+    app -->|Verify or restore| functions[Your Supabase Edge Functions]
+    stores -->|Signed notifications| functions
+    stripe[Your Stripe checkout] -->|Webhook events| functions
+    functions -->|Verify with provider| APIs[Store APIs]
+    functions --> core[Tollgate]
+    core --> db[(Your Postgres database)]
+    db -->|Entitlements| app
+```
+
+All Tollgate runtime components in this diagram run inside your application or
+your Supabase project. The only external systems are the payment providers you
+already use.
+
+## Is Tollgate a good fit?
+
+| Use Tollgate when… | Consider another approach when… |
+| --- | --- |
+| You have a Flutter app and a Supabase backend. | You want a fully hosted purchase platform. |
+| You sell subscriptions, consumables, or permanent unlocks. | You need a no-code paywall or experimentation dashboard. |
+| You want the same entitlement checks across mobile and web. | You do not want to operate store credentials, webhooks, and database migrations. |
+| You want purchase data to stay in your own database. | You need a production-proven Apple or Stripe integration today. |
+
+## Quick start
+
+> [!NOTE]
+> This overview shows the shape of an installation. Follow the
+> [host integration guide](docs/host-integration.md) for the complete,
+> verifiable setup.
+
+### Prerequisites
+
+- A Supabase project and permission to run migrations and deploy Edge Functions
+- A Flutter application for the mobile client
+- Deno 2 for local TypeScript development
+- Store accounts and products for each provider you enable
+- A Mac with Xcode for building and testing the Apple client
+
+### 1. Install the database schema
+
+Copy the two migrations into your Supabase project, preserving their order:
+
+```text
+packages/supabase/migrations/0001_tollgate_schema.sql
+packages/supabase/migrations/0002_tollgate_functions.sql
+```
+
+Then expose the `tollgate` schema through PostgREST. The
+[`@tollgate/supabase` guide](packages/supabase/README.md) includes the config and
+verification steps.
+
+### 2. Describe what you sell
+
+Create entitlement definitions, internal products, and mappings from each
+store's product IDs. Consumables also point to SQL grant and revoke hooks owned
+by your application.
+
+### 3. Deploy the server handlers
+
+Create one authenticated client function and a public notification function for
+each enabled store. Pin remote imports to a release tag — currently `v0.1.3` —
+instead of following `main`.
+
+### 4. Add the Flutter client
+
+```yaml
+dependencies:
+  tollgate:
+    git:
+      url: https://github.com/VDiPaola/Tollgate.git
+      path: packages/flutter
+      ref: v0.1.3
+```
+
+Implement `TollgateBackend` using your existing Supabase client, configure it at
+app startup, and use the same API on Android and iOS:
+
+```dart
+await Tollgate.configure(backend: SupabaseTollgateBackend(supabase));
+
+final products = await Tollgate.instance.products({'premium.monthly'});
+final result = await Tollgate.instance.purchase(products.first);
+
+if (Tollgate.instance.isActive('premium')) {
+  // Show the paid experience.
+}
+```
+
+The full implementation is in the [Flutter client guide](packages/flutter/README.md).
+
+### 5. Connect and test each store
+
+Configure only the providers your app uses:
+
+- [Google Play setup](docs/google-setup.md)
+- [Apple App Store setup](docs/apple-setup.md)
+- [Stripe integration](docs/host-integration.md#5-stripe-if-the-app-also-sells-on-the-web)
+
+Test alongside your current access logic before making Tollgate the source of
+truth. A real in-app purchase still requires a person to complete the store
+dialog on a physical device.
+
+## Project status
+
+Tollgate is currently at `v0.1.3`. APIs and migrations may change before a
+stable release.
+
+| Integration | Implemented | Automated tests | Live validation |
+| --- | :---: | :---: | --- |
+| Google Play / Play Billing 8 | ✅ | ✅ | ✅ Subscriptions, consumables, renewals, refunds, and RTDN on real hardware |
+| Stripe | ✅ | ✅ | ⚠️ Not yet connected to a live Stripe account |
+| Apple / StoreKit 2 | ✅ | ✅ | ⚠️ Not yet built or tested on a Mac or iOS device |
+
+The Apple server tests include generated certificate chains and signed payloads
+to exercise forged, expired, and altered data. That is useful security coverage,
+but it is not a substitute for a real App Store sandbox purchase.
 
 ## Packages
 
-| Package | What it is |
+| Package | Purpose |
 | --- | --- |
-| `packages/core` | Runtime-neutral TypeScript: models, the store adapter contract, orchestration, the fake store |
-| `packages/supabase` | The SQL pack, the Postgres-backed persistence, and drop-in edge function handlers |
-| `packages/flutter` | Dart client: Play Billing on Android, StoreKit 2 on iOS, and no store at all on web and desktop |
+| [`packages/core`](packages/core) | Runtime-neutral TypeScript orchestration, provider adapters, models, cryptography, and a fake store for tests |
+| [`packages/supabase`](packages/supabase/README.md) | SQL migrations, Postgres persistence, and Supabase Edge Function handlers |
+| [`packages/flutter`](packages/flutter/README.md) | Flutter client using Play Billing on Android and StoreKit 2 on Apple platforms |
 
-Core is written against `fetch` and Web Crypto only, with no Node built-ins, so
-one build runs in Supabase Edge Functions (Deno) and in a Next.js route handler
-(Node). That constraint is not aesthetic. Apple's own
-`@apple/app-store-server-library` has documented ES256 curve failures under
-Deno, and `googleapis` is Node-only, so both signature paths are implemented
-here directly.
+The TypeScript core uses standard `fetch` and Web Crypto APIs without Node.js
+built-ins, so it can run in Deno-based Supabase Edge Functions and compatible
+Node.js runtimes.
 
-### There is no browser client, on purpose
-
-Selling on the web means Stripe, and the Stripe adapter deliberately does not
-create checkouts: an app that sells through Stripe has already answered
-currency, tax and pricing its own way, and taking that over would mean
-reimplementing it worse. What is left for a browser client to do is hand a
-`sub_…` or `pi_…` id to an endpoint and read back a list of entitlements, which
-is a `fetch` call against the app's own Supabase client rather than a package.
-
-The Flutter client already covers a Flutter web build: it detects that there is
-no in-app store on the platform, sells nothing itself, and leaves the host app's
-existing checkout to it. A separate JavaScript package would earn its place only
-for a non-Flutter web front end that wanted the same purchase orchestration, and
-until something needs that it would be a package to keep in step for no benefit.
-
-## Status
-
-| Phase | | |
-| --- | --- | --- |
-| 1 | Core, schema pack, fake store, hooks | done |
-| 2 | Google Play adapter (Billing 8, RTDN) | done |
-| 3 | Flutter client, Google path | done |
-| 4 | Host app integration | done, verified with real Google purchases |
-| 5 | Stripe adapter | done; not yet exercised against live Stripe |
-| 6 | Apple adapter and the StoreKit 2 client | written and tested; unverifiable without a Mac |
-| — | JavaScript client | [dropped](#there-is-no-browser-client-on-purpose) |
-
-130 TypeScript tests, 30 SQL cases and 20 Dart tests pass.
-
-The Flutter client originally sat after Stripe. It was moved ahead because
-nothing about Google can be verified without it: a Play purchase needs a person
-tapping through the store dialog on a device, so until an app can start that
-flow there is no purchase token for the server half to be checked against.
-
-Google is verified end to end on real hardware: purchases, subscriptions,
-consumables, renewals, refunds and real-time notifications, all through licence
-testing. Stripe is tested against recorded payloads and real signature round
-trips, but has not been pointed at a live account yet.
-
-Apple is complete on both sides and proven on neither. The server half is tested
-against payloads signed by a throwaway certificate chain the tests hold the keys
-to, which covers the cases a captured Apple payload cannot: a forged chain, a
-body its signature does not cover, an expired certificate. What it cannot cover
-is a real purchase, because that needs an iOS build, which needs Xcode, which
-needs a Mac. Treat the Apple path as unproven until one has been through it.
+> [!NOTE]
+> There is no separate browser SDK. Flutter web exposes no in-app store, and a
+> web application can call its own backend after creating a Stripe checkout.
+> Tollgate verifies and records the resulting Stripe object; it does not create
+> the checkout.
 
 ## Documentation
 
-- [Google Play setup](docs/google-setup.md) — the two consoles, and where each
-  environment variable comes from
-- [App Store setup](docs/apple-setup.md) — the key, the products, the
-  notification endpoint, and what needs a Mac
-- [`@tollgate/supabase`](packages/supabase/README.md) — installing the SQL pack
-  into a project
-- [Host app integration](docs/host-integration.md) — installing it into a project
-- [`tollgate` (Flutter)](packages/flutter/README.md) — the device client
-- [`.env.example`](.env.example) — the credential template
+Start with the [documentation index](docs/README.md), or jump directly to a
+task:
+
+| Goal | Guide |
+| --- | --- |
+| Evaluate the architecture and terminology | [Documentation overview](docs/README.md) |
+| Install Tollgate in an application | [Host integration](docs/host-integration.md) |
+| Configure Google Play and RTDN | [Google Play setup](docs/google-setup.md) |
+| Configure App Store Connect and notifications | [Apple App Store setup](docs/apple-setup.md) |
+| Install the database package | [`@tollgate/supabase`](packages/supabase/README.md) |
+| Integrate purchases in Flutter | [Flutter client](packages/flutter/README.md) |
+| Configure environment variables | [`.env.example`](.env.example) |
 
 ## Development
 
-Deno 2 drives the workspace.
+Clone the repository, then run the checks relevant to your change:
 
-```
-deno task check         # type-check every TypeScript package
-deno task test          # unit tests: no database, no credentials, needs openssl
-deno task test:db       # SQL pack tests, needs Docker
-deno task probe:google  # check Google Play credentials, needs .env
-deno task revoke:google # cancel a test subscription so it can be bought again
-```
-
-Host projects consume this repository directly, pinned to a tag: the edge
-functions import the TypeScript over HTTPS through an import map, and a Flutter
-app takes the Dart package as a `git:` dependency. Nothing is copied into a host
-repository and nothing is published yet. See
-[host integration](docs/host-integration.md).
-
-`openssl` is a real requirement rather than a convenience. The certificate and
-JWS tests build a chain they hold every key to, which is the only way to test
-that a forged one is refused; they fail rather than skip when they cannot run.
-
-The Flutter package has its own toolchain:
-
-```
-cd packages/flutter && flutter test && flutter analyze
+```bash
+deno task check          # Type-check TypeScript packages and scripts
+deno task lint           # Lint TypeScript
+deno task test           # Unit tests; OpenSSL is needed for the full suite
+deno task test:db        # SQL tests in a temporary Docker container
+deno task probe:google   # Validate Google credentials from .env
 ```
 
-All of it runs on every push through [CI](.github/workflows/ci.yml), including
-the SQL pack against a Postgres service container.
+The Flutter package uses its own toolchain:
 
-The SQL tests run against a throwaway Postgres container, not against any
-project's database.
+```bash
+cd packages/flutter
+flutter pub get
+flutter analyze
+flutter test
+```
 
-## Making a real purchase
+CI runs the TypeScript, SQL, and Flutter checks on every pull request. Database
+tests use a disposable Postgres container and do not touch a Supabase project.
+Certificate-chain tests are skipped locally when `openssl` is unavailable; CI
+runs them with OpenSSL installed.
 
-A store purchase cannot be automated: it needs a person tapping through the
-store's own dialog on a physical device. Reaching that point takes five things,
-in this order:
+## Security and data ownership
 
-1. The migrations installed into a Supabase project, and the `tollgate` schema
-   exposed to PostgREST
-2. `entitlement_defs`, `products` and `store_products` rows describing what is
-   sold. `deno task probe:google` prints the Google half of those
-3. An edge function built from `createClientHandler`, reachable from the device.
-   A local `supabase start` works over the LAN if the device uses the machine's
-   IP rather than localhost
-4. A `TollgateBackend` implementation in the host app, which is about thirty
-   lines over an existing Supabase client
-5. A debug build installed on a device signed in with a licence-tester account
+- Store credentials and the Supabase service-role key belong only in your
+  deployment's secret store. Use [`.env.example`](.env.example) as a template;
+  never commit `.env`.
+- Store notifications are authenticated by Google-signed identity tokens,
+  Apple JWS certificate chains, or Stripe webhook signatures.
+- Every Tollgate table has row-level security enabled. Privileged mutation
+  functions are restricted to `service_role`; signed-in users can read only
+  their own customer and entitlement data.
+- `TOLLGATE_ENVIRONMENT` defaults to production so test purchases cannot grant
+  production access unless a deployment explicitly opts into sandbox mode.
 
-Only then does a purchase token exist for `GOOGLE_TEST_PURCHASE_TOKEN`, which is
-what lets the probe check the server's view of a real purchase.
+If you find a security issue, avoid including credentials, purchase tokens, or
+customer data in a public report.
+
+## License
+
+Tollgate is available under the [MIT License](LICENSE).

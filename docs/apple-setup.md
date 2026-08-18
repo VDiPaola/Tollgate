@@ -1,5 +1,7 @@
 # App Store setup
 
+[← Documentation](README.md) · [Project overview](../README.md)
+
 Everything needed to make Tollgate's Apple adapter work, and which environment
 variable each step produces.
 
@@ -8,11 +10,21 @@ separate transactions, bought with separate Apple IDs. A sandbox transaction is
 simply absent from production, which is why every lookup that misses is retried
 against the other host rather than reported as a purchase that does not exist.
 
-None of this can be finished without a paid **Apple Developer Program**
-membership and a **Mac**. Xcode only runs on macOS, and an iOS app cannot be
-built, signed or installed on a device without it. The server half below is
-complete and tested against signed payloads, but nothing about the device half
-is verifiable until there is a machine to build on.
+> [!WARNING]
+> This setup cannot be completed without a paid **Apple Developer Program**
+> membership and a **Mac**. Xcode only runs on macOS, and an iOS app cannot be
+> built, signed, or installed on a device without it. Tollgate's server path is
+> covered by signed-payload tests, but its device path has not yet been
+> validated on Apple hardware.
+
+## Before you begin
+
+- Confirm you can manage the app in App Store Connect.
+- Accept the Paid Applications Agreement and complete the required banking and
+  tax details.
+- Keep [`.env.example`](../.env.example) open; every generated value maps to a
+  documented environment variable there.
+- Prepare a Mac, Xcode, and a physical Apple device for end-to-end testing.
 
 ## Order of work
 
@@ -29,6 +41,7 @@ is verifiable until there is a machine to build on.
 Create the app in App Store Connect. Its **bundle id** must match the Xcode
 project's exactly.
 
+> [!NOTE]
 > `APPLE_BUNDLE_ID` is this value.
 
 Apple checks it twice, in places that fail differently. The API token carries it
@@ -54,6 +67,7 @@ interchangeable: only an In-App Purchase key can call the App Store Server API.
 - The **`.p8` file** downloads once. Apple will not let it be downloaded again,
   so losing it means revoking the key and issuing another.
 
+> [!NOTE]
 > `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, and `APPLE_PRIVATE_KEY_BASE64`, the last
 > being the `.p8` file's contents base64-encoded:
 >
@@ -200,3 +214,8 @@ by anybody else is refused.
 - [App Store Server Notifications V2](https://developer.apple.com/documentation/appstoreservernotifications)
 - [Get All Subscription Statuses](https://developer.apple.com/documentation/appstoreserverapi/get-all-subscription-statuses)
 - [Testing in the sandbox](https://developer.apple.com/documentation/storekit/testing-in-app-purchases-with-sandbox)
+
+## Next step
+
+Return to the [host integration guide](host-integration.md#4-the-client) to add
+the client and prove a sandbox purchase end to end.

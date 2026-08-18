@@ -1,11 +1,18 @@
 # tollgate (Flutter)
 
+[← Project overview](../../README.md) · [Documentation](../../docs/README.md)
+
 The device half. One purchase call regardless of which store the device is on.
 
 Nothing in this package decides what a customer is entitled to. It asks a store
 to take a payment, hands the store's proof to a server, and is told the answer.
 A device that could decide its own entitlements would be a device that could
 grant itself a subscription.
+
+> [!WARNING]
+> The Android path has been validated on real hardware. The Apple path is
+> implemented and covered by analysis and server tests, but has not yet been
+> built or exercised on an Apple device.
 
 ## Setup
 
@@ -18,7 +25,7 @@ dependencies:
     git:
       url: https://github.com/VDiPaola/Tollgate.git
       path: packages/flutter
-      ref: v0.1.0
+      ref: v0.1.3
 ```
 
 Not `path: ../../tollgate/packages/flutter`. That resolves on the machine that

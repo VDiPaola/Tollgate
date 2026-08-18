@@ -1,10 +1,29 @@
-# Installing Tollgate into a host app
+# Integrate Tollgate into an app
 
-What it takes to go from an empty project to a purchase that grants something.
-Ordered so each step can be verified before the next one depends on it.
+[← Documentation](README.md) · [Project overview](../README.md)
+
+This guide takes an existing Supabase and Flutter application from an empty
+Tollgate schema to a purchase that grants access. The steps are ordered so you
+can verify each layer before building on it.
 
 Tollgate is a library. There is no Tollgate server: everything it knows lives in
 the host project's own `tollgate` schema.
+
+## Before you begin
+
+You will need:
+
+- a Supabase project with access to migrations, project configuration, secrets,
+  and Edge Function deployment;
+- a Flutter application with authenticated Supabase users;
+- store credentials and at least one configured product for every provider you
+  plan to enable; and
+- a safe development environment for test purchases.
+
+> [!IMPORTANT]
+> Complete and validate this integration alongside your existing access logic.
+> Do not make Tollgate the only source of access until a real test purchase,
+> renewal, cancellation, refund, and restore have passed through the full path.
 
 ## 1. The SQL pack
 
@@ -24,11 +43,12 @@ Expose the schema to PostgREST, or every call fails with
 schemas = ["public", "graphql_public", "tollgate"]
 ```
 
-**Editing that file is not enough on a running stack.** PostgREST takes its
-schema list from an environment variable fixed when its container is created,
-so a local stack that is already up keeps the old list however many times the
-config is saved. Either restart the stack, or tell PostgREST live from the
-database, which avoids the downtime:
+> [!WARNING]
+> Editing that file is not enough on a running stack. PostgREST takes its
+> schema list from an environment variable fixed when its container is created,
+> so a local stack that is already up keeps the old list however many times the
+> config is saved. Either restart the stack, or tell PostgREST live from the
+> database, which avoids the downtime:
 
 ```sql
 alter role authenticator
@@ -124,8 +144,8 @@ this repository, pinned to a tag. Put an import map in
 ```json
 {
   "imports": {
-    "@tollgate/core": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.0/packages/core/src/index.ts",
-    "@tollgate/supabase": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.0/packages/supabase/src/index.ts",
+    "@tollgate/core": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.3/packages/core/src/index.ts",
+    "@tollgate/supabase": "https://raw.githubusercontent.com/VDiPaola/Tollgate/v0.1.3/packages/supabase/src/index.ts",
     "@supabase/supabase-js": "jsr:@supabase/supabase-js@2"
   }
 }
@@ -147,7 +167,7 @@ that does it will look identical to the one before.
 One client function, and one notification function per store. The client one:
 
 ```ts
-import { createClientHandler } from '../_shared/tollgate/supabase/index.ts';
+import { createClientHandler } from '@tollgate/supabase';
 import { asUser, tollgate } from '../_shared/tollgate.ts';
 
 Deno.serve(createClientHandler({ tollgate, authClient: asUser }));
@@ -168,7 +188,7 @@ verify_jwt = false
 ```
 
 ```ts
-import { createNotificationHandler } from '../_shared/tollgate/supabase/index.ts';
+import { createNotificationHandler } from '@tollgate/supabase';
 import { tollgate } from '../_shared/tollgate.ts';
 
 Deno.serve(createNotificationHandler(tollgate, 'apple'));
@@ -189,9 +209,10 @@ environment. A store with no credentials is simply absent: the host's own
 one, so an app asking about it gets a clean "unknown store" instead of a stack
 trace from inside a payment.
 
-> A new function directory 404s until the local edge runtime container is
-> recreated: it bakes the function list into its environment at creation, and
-> restarting is not enough.
+> [!TIP]
+> A new function directory returns 404 until the local Edge Runtime container
+> is recreated. It captures the function list when the container is created, so
+> restarting the function alone is not enough.
 
 ## 4. The client
 
@@ -203,7 +224,7 @@ dependencies:
     git:
       url: https://github.com/VDiPaola/Tollgate.git
       path: packages/flutter
-      ref: v0.1.0
+      ref: v0.1.3
 ```
 
 Not `path:` to a sibling checkout. That resolves on the machine holding both
@@ -294,3 +315,9 @@ between a paying customer and what they bought.
 A debug screen that lists products, buys one and prints what came back is enough
 to prove the chain. Switching the app over is a separate, deliberate change once
 a real purchase has been through end to end.
+
+## Next steps
+
+- Connect [Google Play](google-setup.md) or [Apple's App Store](apple-setup.md).
+- Review the [Flutter purchasing API](../packages/flutter/README.md#buying).
+- Work through the [production checklist](README.md#before-production).
