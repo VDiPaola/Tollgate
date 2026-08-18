@@ -119,6 +119,54 @@ export interface ProductLineItem {
   productOfferDetails?: ProductOfferDetails;
 }
 
+// --- The one-time product catalogue ------------------------------------------
+//
+// Play states what a subscription cost on the purchase itself, and states
+// nothing at all about what a one-time purchase cost: `purchases.productsv2`
+// carries the product, the option, the quantity and the region, and no money.
+// The price lives in the catalogue instead, per purchase option, per region.
+//
+// `monetization.onetimeproducts` replaced the older `inappproducts`, which
+// answers 403 "Please migrate to the new publishing API" for any app that has
+// been migrated.
+
+export type RegionalAvailability =
+  | 'AVAILABILITY_UNSPECIFIED'
+  | 'AVAILABLE'
+  | 'NO_LONGER_AVAILABLE'
+  | 'AVAILABLE_IF_RELEASED';
+
+export interface RegionalPricingAndAvailabilityConfig {
+  /** ISO 3166 region, matching the `regionCode` on a purchase. */
+  regionCode?: string;
+  price?: Money;
+  availability?: RegionalAvailability;
+}
+
+export interface OneTimeProductPurchaseOption {
+  purchaseOptionId?: string;
+  state?: string;
+  regionalPricingAndAvailabilityConfigs?: RegionalPricingAndAvailabilityConfig[];
+  /**
+   * Play's fallback for regions with no explicit price of their own, which it
+   * converts from at its own rate. Deliberately not read: the converted amount
+   * that was actually charged is not knowable from here, and a guess is worse
+   * in a revenue figure than an admitted gap.
+   */
+  newRegionsConfig?: {
+    usdPrice?: Money;
+    eurPrice?: Money;
+    availability?: RegionalAvailability;
+  };
+  offerTags?: string[];
+}
+
+export interface OneTimeProduct {
+  packageName?: string;
+  productId?: string;
+  purchaseOptions?: OneTimeProductPurchaseOption[];
+}
+
 export interface ProductPurchaseV2 {
   productLineItem?: ProductLineItem[];
   purchaseStateContext?: { purchaseState?: ProductPurchaseState };

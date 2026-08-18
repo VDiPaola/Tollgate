@@ -88,8 +88,15 @@ using the service account's email address (it ends in
 
 | Permission | Why it is needed |
 | --- | --- |
+| View app information and download bulk reports | Reading the one-time product catalogue, which is where the price of a one-time purchase lives |
 | View financial data, orders, and cancellation survey responses | Reading purchase and subscription state |
 | Manage orders and subscriptions | Acknowledging, consuming and refunding |
+
+The first one is easy to miss, because leaving it out breaks nothing that a
+customer can see: purchases verify, entitlements are granted, and one-time sales
+are simply recorded with no amount against them. It shows up later as revenue
+reporting that is quietly short. The adapter logs a warning each time it
+happens rather than failing the payment.
 
 **Then wait.** These grants commonly take a day or two to take effect. During
 that window the API returns permission errors that look exactly like a bad key
@@ -172,6 +179,26 @@ to a track before products can be created.
   been migrated no longer answers the legacy `inappproducts` API at all: it
   returns "Please migrate to the new publishing API". Tollgate reads purchase
   state through `purchases.productsv2`, which works either way.
+
+### What a one-time purchase cost
+
+Play states a subscription's price on the purchase itself, as
+`recurringPrice`, and states nothing at all about a one-time purchase's. What
+`purchases.productsv2` does carry is the product, the purchase option, the
+quantity and the region, which is exactly the key `monetization.onetimeproducts`
+prices by, so the adapter fills the amount in from the catalogue.
+
+Two cases it deliberately refuses to price, leaving the amount empty rather than
+approximating it:
+
+- **An offer was applied.** The purchase option's price is the list price and an
+  offer is a discount off it, so reporting the list price would overstate
+  revenue on exactly the sales that earned least.
+- **The region has no price of its own.** Play converts from the fallback
+  configured for new regions, at a rate it does not publish here.
+
+A product's catalogue entry is cached for an hour, because prices change when
+somebody edits them in the Console and not in the middle of a burst of sales.
 
 Products must be **active**. Map each into `tollgate.store_products`:
 

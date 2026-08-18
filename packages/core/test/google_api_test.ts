@@ -486,3 +486,193 @@ Deno.test('a stated kind is trusted, and costs no second request', async () => {
   // looked up in the wrong place.
   assertEquals(calls.filter((c) => c.url.includes('productsv2')).length, 0);
 });
+
+// --- pricing a one-time purchase --------------------------------------------
+//
+// Play states a subscription's price on the purchase itself and states nothing
+// about a one-time purchase's, so the amount has to come from the catalogue,
+// keyed by the purchase option and the region the purchase already carries.
+
+/** The same purchase, sold in a region and through a named purchase option. */
+const PRICED_PRODUCT_BODY = {
+  ...PRODUCT_BODY,
+  regionCode: 'GB',
+  productLineItem: [{
+    productId: 'gems_500',
+    productOfferDetails: {
+      purchaseOptionId: 'gems-500-option',
+      quantity: 1,
+      consumptionState: 'CONSUMPTION_STATE_YET_TO_BE_CONSUMED',
+    },
+  }],
+};
+
+const CATALOGUE = {
+  packageName: PACKAGE,
+  productId: 'gems_500',
+  purchaseOptions: [
+    {
+      purchaseOptionId: 'gems-500-option',
+      state: 'ACTIVE',
+      regionalPricingAndAvailabilityConfigs: [
+        {
+          regionCode: 'US',
+          price: { currencyCode: 'USD', units: '2', nanos: 990000000 },
+          availability: 'AVAILABLE',
+        },
+        {
+          regionCode: 'GB',
+          price: { currencyCode: 'GBP', units: '1', nanos: 790000000 },
+          availability: 'AVAILABLE',
+        },
+      ],
+    },
+    {
+      // A second option at a different price, to prove the match is on the
+      // option the buyer actually used rather than on the first one listed.
+      purchaseOptionId: 'gems-500-bundle',
+      regionalPricingAndAvailabilityConfigs: [
+        { regionCode: 'GB', price: { currencyCode: 'GBP', units: '9', nanos: 0 } },
+      ],
+    },
+  ],
+};
+
+function buyGems(adapter: GoogleAdapter, kind: 'consumable' = 'consumable') {
+  return adapter.verify({
+    token: 'token-gems',
+    userId: 'u',
+    appAccountToken: ACCOUNT,
+    kind,
+  });
+}
+
+Deno.test('a one-time purchase is priced from the catalogue, by option and region', async () => {
+  const { adapter, calls } = adapterWith({
+    '/purchases/productsv2/': ok(PRICED_PRODUCT_BODY),
+    '/oneTimeProducts/': ok(CATALOGUE),
+  });
+
+  const p = await buyGems(adapter);
+
+  // 1.79 GBP, from the GB row of the option that was bought.
+  assertEquals(p.priceAmountMicros, 1_790_000);
+  assertEquals(p.priceCurrency, 'gbp');
+
+  const call = calls.find((c) => c.url.includes('/oneTimeProducts/'))!;
+  assert(call.url.endsWith(`/applications/${PACKAGE}/oneTimeProducts/gems_500`), call.url);
+  assertEquals(call.method, 'GET');
+});
+
+Deno.test('several of the same thing cost several times as much', async () => {
+  const { adapter } = adapterWith({
+    '/purchases/productsv2/': ok({
+      ...PRICED_PRODUCT_BODY,
+      productLineItem: [{
+        productId: 'gems_500',
+        productOfferDetails: { purchaseOptionId: 'gems-500-option', quantity: 3 },
+      }],
+    }),
+    '/oneTimeProducts/': ok(CATALOGUE),
+  });
+
+  const p = await buyGems(adapter);
+  assertEquals(p.quantity, 3);
+  // The catalogue prices one. Reporting 1.79 for a 5.37 sale would understate
+  // exactly the largest purchases.
+  assertEquals(p.priceAmountMicros, 5_370_000);
+});
+
+Deno.test('a discounted purchase is left unpriced rather than priced at list', async () => {
+  const { adapter, calls } = adapterWith({
+    '/purchases/productsv2/': ok({
+      ...PRICED_PRODUCT_BODY,
+      productLineItem: [{
+        productId: 'gems_500',
+        productOfferDetails: {
+          purchaseOptionId: 'gems-500-option',
+          offerId: 'launch-week',
+          quantity: 1,
+        },
+      }],
+    }),
+    '/oneTimeProducts/': ok(CATALOGUE),
+  });
+
+  const p = await buyGems(adapter);
+
+  // An offer is a discount off the option's price, and the discount is not on
+  // this response. Reporting the list price would overstate revenue on the
+  // sales that earned least, so it says nothing and the catalogue is not even
+  // asked.
+  assertEquals(p.priceAmountMicros, null);
+  assertEquals(calls.filter((c) => c.url.includes('/oneTimeProducts/')).length, 0);
+});
+
+Deno.test('a region Play priced by conversion is left unpriced', async () => {
+  const { adapter } = adapterWith({
+    '/purchases/productsv2/': ok({ ...PRICED_PRODUCT_BODY, regionCode: 'JP' }),
+    '/oneTimeProducts/': ok(CATALOGUE),
+  });
+
+  // Japan has no row of its own, so Play charged a rate converted from the
+  // fallback that it does not publish here. A guess in a revenue figure is
+  // worse than an admitted gap.
+  assertEquals((await buyGems(adapter)).priceAmountMicros, null);
+});
+
+Deno.test('a catalogue that cannot be read does not fail the purchase', async () => {
+  const { adapter } = adapterWith({
+    '/purchases/productsv2/': ok(PRICED_PRODUCT_BODY),
+    '/oneTimeProducts/': () => new Response('nope', { status: 500 }),
+  });
+
+  // The money has already changed hands. Failing here would turn a reporting
+  // gap into a payment the customer is told did not work.
+  const p = await buyGems(adapter);
+  assertEquals(p.status, 'active');
+  assertEquals(p.priceAmountMicros, null);
+});
+
+Deno.test('the catalogue is fetched once, not once per sale', async () => {
+  const { adapter, calls } = adapterWith({
+    '/purchases/productsv2/': ok(PRICED_PRODUCT_BODY),
+    '/oneTimeProducts/': ok(CATALOGUE),
+  });
+
+  await Promise.all([buyGems(adapter), buyGems(adapter)]);
+  await buyGems(adapter);
+
+  // Prices change when somebody edits them in the console. A burst of sales
+  // should not be a burst of catalogue reads, and concurrent misses collapse
+  // rather than racing.
+  assertEquals(calls.filter((c) => c.url.includes('/oneTimeProducts/')).length, 1);
+});
+
+Deno.test('a subscription never asks the one-time catalogue', async () => {
+  const { adapter, calls } = adapterWith({
+    'subscriptionsv2': ok({
+      ...SUBSCRIPTION_BODY,
+      lineItems: [{
+        ...SUBSCRIPTION_BODY.lineItems[0],
+        autoRenewingPlan: {
+          autoRenewEnabled: true,
+          recurringPrice: { currencyCode: 'GBP', units: '8', nanos: 990000000 },
+        },
+      }],
+    }),
+  });
+
+  const p = await adapter.verify({
+    token: 'token-abc',
+    userId: 'u',
+    appAccountToken: ACCOUNT,
+    kind: 'subscription',
+  });
+
+  // Play states a subscription's price on the purchase, so there is nothing to
+  // look up and no request to pay for.
+  assertEquals(p.priceAmountMicros, 8_990_000);
+  assertEquals(p.priceCurrency, 'gbp');
+  assertEquals(calls.filter((c) => c.url.includes('/oneTimeProducts/')).length, 0);
+});

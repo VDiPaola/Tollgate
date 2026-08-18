@@ -22,10 +22,11 @@ import type { NormalizedPurchase, PurchaseRef } from '../../types.ts';
 import { verifyGoogleIdToken } from '../../crypto/jwt.ts';
 import { base64ToBytes, fromUtf8 } from '../../crypto/encoding.ts';
 import { GoogleAuth, parseServiceAccount, type ServiceAccount } from './auth.ts';
-import { normalizeProduct, normalizeSubscription } from './normalize.ts';
+import { moneyToMicros, normalizeProduct, normalizeSubscription } from './normalize.ts';
 import {
   type DeveloperNotification,
   ONE_TIME_PRODUCT_NOTIFICATION,
+  type OneTimeProduct,
   type ProductPurchase,
   type ProductPurchaseV2,
   type PubSubPush,
@@ -34,6 +35,16 @@ import {
 } from './types.ts';
 
 const API = 'https://androidpublisher.googleapis.com/androidpublisher/v3';
+
+/**
+ * How long a product's catalogue entry is trusted for.
+ *
+ * Prices are changed by a human in the Play Console, so this trades a stale
+ * price for an hour against an extra request on every one-time sale. The
+ * consequence of the staleness is a reporting figure being briefly out by the
+ * size of a price change, which is the cheaper mistake.
+ */
+const CATALOGUE_TTL_MS = 60 * 60 * 1000;
 
 export interface GoogleAdapterOptions {
   /** The applicationId, which must match the Play Console entry exactly. */
@@ -48,6 +59,11 @@ export interface GoogleAdapterOptions {
   pubsubAudience?: string;
   /** The service account Pub/Sub signs its pushes as. */
   pubsubServiceAccountEmail?: string;
+  /**
+   * Somewhere to report a problem that must not fail the purchase, such as a
+   * catalogue lookup that would only have filled in a reporting figure.
+   */
+  logger?: (message: string, detail?: unknown) => void;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -61,6 +77,18 @@ export class GoogleAdapter implements StoreAdapter {
   readonly #now: () => number;
   readonly #audience?: string;
   readonly #pushEmail?: string;
+  readonly #log?: (message: string, detail?: unknown) => void;
+
+  /**
+   * One-time product catalogues, by product id.
+   *
+   * The promise is cached rather than its result, which is what collapses
+   * concurrent misses onto a single request.
+   */
+  readonly #prices = new Map<
+    string,
+    { product: Promise<OneTimeProduct | null>; expires: number }
+  >();
 
   constructor(opts: GoogleAdapterOptions) {
     if (!opts.packageName) {
@@ -71,6 +99,7 @@ export class GoogleAdapter implements StoreAdapter {
     this.#now = opts.now ?? (() => Date.now());
     this.#audience = opts.pubsubAudience;
     this.#pushEmail = opts.pubsubServiceAccountEmail;
+    this.#log = opts.logger;
     this.#auth = new GoogleAuth(
       typeof opts.serviceAccount === 'string'
         ? parseServiceAccount(opts.serviceAccount)
@@ -138,11 +167,14 @@ export class GoogleAdapter implements StoreAdapter {
         }`,
       );
       if (!body) return null;
-      return normalizeProduct(body, {
-        purchaseToken: ref.originalTransactionId,
-        productId: ref.storeProductId,
-        consumable: ref.kind === 'consumable',
-      });
+      return await this.#priced(
+        normalizeProduct(body, {
+          purchaseToken: ref.originalTransactionId,
+          productId: ref.storeProductId,
+          consumable: ref.kind === 'consumable',
+        }),
+        body,
+      );
     }
 
     const body = await this.#get<SubscriptionPurchaseV2>(
@@ -172,18 +204,115 @@ export class GoogleAdapter implements StoreAdapter {
         }`,
       );
       if (product) {
-        return normalizeProduct(product, {
-          purchaseToken: ref.originalTransactionId,
-          productId: ref.storeProductId,
-          // Unknown, and the catalogue corrects it when the purchase is
-          // recorded. Guessing consumable here would consume something that
-          // should only have been acknowledged.
-          consumable: false,
-        });
+        return await this.#priced(
+          normalizeProduct(product, {
+            purchaseToken: ref.originalTransactionId,
+            productId: ref.storeProductId,
+            // Unknown, and the catalogue corrects it when the purchase is
+            // recorded. Guessing consumable here would consume something that
+            // should only have been acknowledged.
+            consumable: false,
+          }),
+          product,
+        );
       }
     }
 
     return null;
+  }
+
+  /**
+   * Fill in what a one-time purchase cost, from the catalogue.
+   *
+   * Play states a subscription's price on the purchase and states nothing about
+   * a one-time purchase's, so without this every gem pack is recorded as a sale
+   * with no amount and is missing from any revenue figure. What the purchase
+   * does carry is the product, the purchase option, the quantity and the
+   * region, which is exactly the key the catalogue prices by.
+   *
+   * **Nothing here can be influenced by a client.** Every input is a field
+   * Google itself put on the verified purchase, and the lookup goes out on this
+   * server's own service account. The result is written only to the price
+   * fields, which no entitlement decision reads: getting this wrong makes a
+   * report wrong, never a customer's access.
+   *
+   * It is deliberately quiet about the cases it cannot price, rather than
+   * approximating them:
+   *
+   * - **An offer was applied.** The purchase option's price is the list price,
+   *   and an offer is a discount off it. Reporting the list price would
+   *   overstate revenue on exactly the sales that earned least.
+   * - **The region has no price of its own.** Play converts from the fallback
+   *   at a rate it does not publish here, so the charged amount is not
+   *   recoverable.
+   *
+   * Both leave the amount null, which is what the reporting already treats as
+   * "sold, not summable".
+   */
+  async #priced(
+    purchase: NormalizedPurchase,
+    raw: ProductPurchaseV2,
+  ): Promise<NormalizedPurchase> {
+    if (purchase.priceAmountMicros != null) return purchase;
+
+    const offer = raw.productLineItem?.[0]?.productOfferDetails;
+    const region = raw.regionCode;
+    const optionId = offer?.purchaseOptionId;
+    if (offer?.offerId || !region || !optionId || !purchase.storeProductId) {
+      return purchase;
+    }
+
+    try {
+      const product = await this.#catalogue(purchase.storeProductId);
+      const price = product?.purchaseOptions
+        ?.find((o) => o.purchaseOptionId === optionId)
+        ?.regionalPricingAndAvailabilityConfigs
+        ?.find((c) => c.regionCode === region)
+        ?.price;
+
+      const unit = moneyToMicros(price);
+      if (unit == null || !price?.currencyCode) return purchase;
+
+      return {
+        ...purchase,
+        // Per unit in the catalogue, and a buyer can take several in one
+        // transaction where the purchase option allows it.
+        priceAmountMicros: unit * Math.max(1, purchase.quantity),
+        priceCurrency: price.currencyCode.toLowerCase(),
+      };
+    } catch (e) {
+      // Never fatal. A purchase that cannot be priced is still a purchase, and
+      // failing here would turn a reporting gap into a failed payment.
+      this.#log?.(
+        `Could not price ${purchase.storeProductId} for ${region}`,
+        e,
+      );
+      return purchase;
+    }
+  }
+
+  /**
+   * One product's catalogue entry, cached.
+   *
+   * Prices change when somebody edits them in the Play Console, which is rarely
+   * and never in the middle of a burst of purchases, so this is held for a
+   * while rather than fetched per sale. Concurrent misses collapse onto one
+   * request: a notification storm on a cold isolate would otherwise ask for the
+   * same product a dozen times over.
+   */
+  async #catalogue(productId: string): Promise<OneTimeProduct | null> {
+    const now = this.#now();
+    const hit = this.#prices.get(productId);
+    if (hit && now < hit.expires) return await hit.product;
+
+    const product = this.#get<OneTimeProduct>(
+      `/oneTimeProducts/${encodeURIComponent(productId)}`,
+    );
+    this.#prices.set(productId, {
+      product,
+      expires: now + CATALOGUE_TTL_MS,
+    });
+    return await product;
   }
 
   /**
